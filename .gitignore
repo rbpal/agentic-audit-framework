@@ -1,3 +1,48 @@
+# ============================================================
+# ===== PRIVATE — NEVER COMMIT (top of file — scan me first) ==
+# ============================================================
+# Strategic docs. Primary defense is physical separation
+# (privateDocs/ lives OUTSIDE the repo as a sibling folder).
+# This block is defense-in-depth: if someone creates
+# privateDocs/ INSIDE the repo by mistake, it still gets ignored.
+privateDocs/
+*.private.md
+
+# Secrets — runtime env + infra credentials. The !.env.example
+# allow-list re-whitelists the committed template.
+.env
+.env.*
+!.env.example
+
+# ML experiment tracking — large, local-only, regenerable
+mlruns/
+mlartifacts/
+
+# IDE / editor settings — per-user preferences, not project policy
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Coverage / pytest artifacts (augments stock Python template)
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Terraform state — CRITICAL: plaintext secrets live here
+*.tfstate
+*.tfstate.backup
+*.tfstate.*.backup
+.terraform/
+terraform.tfvars
+!terraform.tfvars.example
+# ============================================================
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
