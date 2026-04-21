@@ -1,6 +1,6 @@
 # agentic-audit-framework
 
-Multi-agent SOX control testing on Azure + Databricks. LangGraph supervisor orchestrating deterministic extraction, grounded narrative generation, and agentic exception investigation. Production engineering: MLflow, OpenTelemetry, Unity Catalog, autoscaling, DR plan, Bicep IaC.
+Multi-agent SOX control testing on Azure + Databricks. LangGraph supervisor orchestrating deterministic extraction, grounded narrative generation, and agentic exception investigation. Production engineering: MLflow, OpenTelemetry, Unity Catalog, autoscaling, DR plan, Terraform IaC.
 
 ## Status
 
@@ -46,7 +46,7 @@ Steps 1–14 (planned):
 5. Layer 3 — agentic exception investigation
 6. Evaluation harness with gold scenarios
 7. Streamlit demo
-8. Azure infra (Bicep IaC)
+8. Azure infra (Terraform IaC)
 9. OpenTelemetry tracing
 10. MLflow experiment tracking
 11. Deployment to Azure Container Apps
