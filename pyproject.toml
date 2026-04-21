@@ -39,3 +39,84 @@ dev = [
     "mypy (>=1.20.1,<2.0.0)",
     "pre-commit (>=4.5.1,<5.0.0)"
 ]
+
+# ============================================================================
+# Quality tool configuration (Task 2)
+# ============================================================================
+
+# ----- Ruff: lint + format -------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# E,W pycodestyle | F pyflakes | I isort | UP pyupgrade | B bugbear
+# SIM simplify | N pep8-naming
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "N"]
+ignore = [
+    "E501",  # line-too-long: formatter handles it
+    "B008",  # function-call-in-default-argument: false-positive on FastAPI/typer
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]  # allow `assert` in tests
+
+[tool.ruff.lint.isort]
+known-first-party = ["agentic_audit"]
+
+# ----- Mypy: strict typing on src/ ----------------------------------------
+[tool.mypy]
+python_version = "3.11"
+strict_optional = true
+disallow_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_optional = true
+check_untyped_defs = true
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = ["langgraph.*", "mlflow.*", "openpyxl.*", "streamlit.*"]
+ignore_missing_imports = true
+
+# ----- Pytest: async auto, coverage floor ---------------------------------
+[tool.pytest.ini_options]
+minversion = "7.0"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+]
+markers = [
+    "unit: fast isolated tests",
+    "integration: hits real services (Azure, Databricks)",
+    "slow: excluded from default pre-commit run",
+]
+
+# ----- Coverage: branch coverage, 70% global floor ------------------------
+[tool.coverage.run]
+branch = true
+source = ["src/agentic_audit"]
+omit = [
+    "*/__init__.py",
+    "*/conftest.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+show_missing = true
+precision = 2
+fail_under = 70
