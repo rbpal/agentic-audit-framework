@@ -1,0 +1,125 @@
+[project]
+name = "agentic-audit-framework"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Rajendra B Pal",email = "rajendra1b1pal@gmail.com"}
+]
+license = "MIT"
+readme = "README.md"
+requires-python = ">=3.11,<4.0"
+dependencies = [
+    "langgraph (>=1.1.8,<2.0.0)",
+    "langchain-openai (>=1.1.15,<2.0.0)",
+    "openai (>=2.32.0,<3.0.0)",
+    "pydantic (>=2.13.3,<3.0.0)",
+    "pydantic-settings (>=2.14.0,<3.0.0)",
+    "openpyxl (>=3.1.5,<4.0.0)",
+    "pandas (>=2.2,<3.0)",
+    "tenacity (>=9.1.4,<10.0.0)",
+    "opentelemetry-api (>=1.41.0,<2.0.0)",
+    "opentelemetry-sdk (>=1.41.0,<2.0.0)",
+    "opentelemetry-instrumentation (>=0.62b0,<0.63)",
+    "mlflow (>=3.11.1,<4.0.0)",
+    "streamlit (>=1.56.0,<2.0.0)",
+    "pyyaml (>=6.0.3,<7.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+packages = [{ include = "agentic_audit", from = "src" }]
+
+[dependency-groups]
+dev = [
+    "pytest (>=9.0.3,<10.0.0)",
+    "pytest-cov (>=7.1.0,<8.0.0)",
+    "pytest-asyncio (>=1.3.0,<2.0.0)",
+    "ruff (>=0.15.11,<0.16.0)",
+    "mypy (>=1.20.1,<2.0.0)",
+    "pre-commit (>=4.5.1,<5.0.0)"
+]
+
+# ============================================================================
+# Quality tool configuration (Task 2)
+# ============================================================================
+
+# ----- Ruff: lint + format -------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# E,W pycodestyle | F pyflakes | I isort | UP pyupgrade | B bugbear
+# SIM simplify | N pep8-naming
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "N"]
+ignore = [
+    "E501",  # line-too-long: formatter handles it
+    "B008",  # function-call-in-default-argument: false-positive on FastAPI/typer
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]  # allow `assert` in tests
+
+[tool.ruff.lint.isort]
+known-first-party = ["agentic_audit"]
+
+# ----- Mypy: strict typing on src/ ----------------------------------------
+[tool.mypy]
+python_version = "3.11"
+strict_optional = true
+disallow_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_optional = true
+check_untyped_defs = true
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = ["langgraph.*", "mlflow.*", "openpyxl.*", "streamlit.*"]
+ignore_missing_imports = true
+
+# ----- Pytest: async auto, coverage floor ---------------------------------
+[tool.pytest.ini_options]
+minversion = "7.0"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+]
+markers = [
+    "unit: fast isolated tests",
+    "integration: hits real services (Azure, Databricks)",
+    "slow: excluded from default pre-commit run",
+]
+
+# ----- Coverage: branch coverage, 70% global floor ------------------------
+[tool.coverage.run]
+branch = true
+source = ["src/agentic_audit"]
+omit = [
+    "*/__init__.py",
+    "*/conftest.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+show_missing = true
+precision = 2
+fail_under = 70
