@@ -1,0 +1,21 @@
+# SOX Audit — Synthetic Scenario Manifest
+# One entry per scenario. Task 4 will expand to 20 rows.
+# Schema version: 1.0 (bump on breaking changes)
+version: "1.0"
+
+scenarios:
+  - scenario_id: q1_pass_sample_01
+    control_id: DC-9
+    pattern_type: signoff_with_tieout
+    quarter: Q1
+    expected_outcome: pass
+    exception_type: none
+    seed: 42
+
+  - scenario_id: q3_exception_sample_01
+    control_id: DC-2
+    pattern_type: variance_detection
+    quarter: Q3
+    expected_outcome: exception
+    exception_type: variance_above_threshold_no_explanation
+    seed: 43
