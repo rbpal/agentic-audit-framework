@@ -85,7 +85,7 @@ jobs:
           key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('poetry.lock') }}
           restore-keys: |
             venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-
-      - run: poetry install --no-interaction --no-root
+      - run: poetry install --no-interaction
       - run: poetry run pytest --cov=src/agentic_audit --cov-report=xml
 
       - name: Upload coverage report
