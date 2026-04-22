@@ -1,10 +1,14 @@
 # SOX Audit — Synthetic Scenario Manifest
-# One entry per scenario. Task 4 will expand to 20 rows.
-# Schema version: 1.0 (bump on breaking changes)
+# 20 curated scenarios covering DC-9 (signoff_with_tieout) and DC-2 (variance_detection).
+# Distribution: 10 pass + 10 exception · 10 DC-9 + 10 DC-2 · 10 Q1 + 10 Q3.
+# Schema version: 1.0 (bump on breaking changes).
 version: "1.0"
 
 scenarios:
-  - scenario_id: q1_pass_sample_01
+  # ── PASS cases (10) — seeds 42–51 ──────────────────────────────────
+
+  # DC-9 pass (5): 2 Q1, 3 Q3
+  - scenario_id: q1_pass_dc9_01
     control_id: DC-9
     pattern_type: signoff_with_tieout
     quarter: Q1
@@ -12,10 +16,159 @@ scenarios:
     exception_type: none
     seed: 42
 
-  - scenario_id: q3_exception_sample_01
+  - scenario_id: q1_pass_dc9_02
+    control_id: DC-9
+    pattern_type: signoff_with_tieout
+    quarter: Q1
+    expected_outcome: pass
+    exception_type: none
+    seed: 43
+
+  - scenario_id: q3_pass_dc9_01
+    control_id: DC-9
+    pattern_type: signoff_with_tieout
+    quarter: Q3
+    expected_outcome: pass
+    exception_type: none
+    seed: 44
+
+  - scenario_id: q3_pass_dc9_02
+    control_id: DC-9
+    pattern_type: signoff_with_tieout
+    quarter: Q3
+    expected_outcome: pass
+    exception_type: none
+    seed: 45
+
+  - scenario_id: q3_pass_dc9_03
+    control_id: DC-9
+    pattern_type: signoff_with_tieout
+    quarter: Q3
+    expected_outcome: pass
+    exception_type: none
+    seed: 46
+
+  # DC-2 pass (5): 3 Q1, 2 Q3
+  - scenario_id: q1_pass_dc2_01
+    control_id: DC-2
+    pattern_type: variance_detection
+    quarter: Q1
+    expected_outcome: pass
+    exception_type: none
+    seed: 47
+
+  - scenario_id: q1_pass_dc2_02
+    control_id: DC-2
+    pattern_type: variance_detection
+    quarter: Q1
+    expected_outcome: pass
+    exception_type: none
+    seed: 48
+
+  - scenario_id: q1_pass_dc2_03
+    control_id: DC-2
+    pattern_type: variance_detection
+    quarter: Q1
+    expected_outcome: pass
+    exception_type: none
+    seed: 49
+
+  - scenario_id: q3_pass_dc2_01
+    control_id: DC-2
+    pattern_type: variance_detection
+    quarter: Q3
+    expected_outcome: pass
+    exception_type: none
+    seed: 50
+
+  - scenario_id: q3_pass_dc2_02
+    control_id: DC-2
+    pattern_type: variance_detection
+    quarter: Q3
+    expected_outcome: pass
+    exception_type: none
+    seed: 51
+
+  # ── EXCEPTION cases (10) — seeds 52–61 ─────────────────────────────
+
+  # DC-9 exceptions (5)
+  - scenario_id: q1_exception_dc9_signoff_missing_01
+    control_id: DC-9
+    pattern_type: signoff_with_tieout
+    quarter: Q1
+    expected_outcome: exception
+    exception_type: signoff_missing
+    seed: 52
+
+  - scenario_id: q3_exception_dc9_signoff_missing_02
+    control_id: DC-9
+    pattern_type: signoff_with_tieout
+    quarter: Q3
+    expected_outcome: exception
+    exception_type: signoff_missing
+    seed: 53
+
+  - scenario_id: q1_exception_dc9_figure_mismatch_01
+    control_id: DC-9
+    pattern_type: signoff_with_tieout
+    quarter: Q1
+    expected_outcome: exception
+    exception_type: figure_mismatch
+    seed: 54
+
+  - scenario_id: q3_exception_dc9_rate_no_amendment_01
+    control_id: DC-9
+    pattern_type: signoff_with_tieout
+    quarter: Q3
+    expected_outcome: exception
+    exception_type: billing_rate_change_without_amendment
+    seed: 55
+
+  - scenario_id: q3_exception_dc9_boundary_01
+    control_id: DC-9
+    pattern_type: signoff_with_tieout
+    quarter: Q3
+    expected_outcome: exception
+    exception_type: boundary_edge_case
+    seed: 56
+
+  # DC-2 exceptions (5)
+  - scenario_id: q1_exception_dc2_variance_no_explanation_01
+    control_id: DC-2
+    pattern_type: variance_detection
+    quarter: Q1
+    expected_outcome: exception
+    exception_type: variance_above_threshold_no_explanation
+    seed: 57
+
+  - scenario_id: q3_exception_dc2_variance_no_explanation_02
     control_id: DC-2
     pattern_type: variance_detection
     quarter: Q3
     expected_outcome: exception
     exception_type: variance_above_threshold_no_explanation
-    seed: 43
+    seed: 58
+
+  - scenario_id: q1_exception_dc2_variance_inadequate_01
+    control_id: DC-2
+    pattern_type: variance_detection
+    quarter: Q1
+    expected_outcome: exception
+    exception_type: variance_explanation_inadequate
+    seed: 59
+
+  - scenario_id: q3_exception_dc2_variance_inadequate_02
+    control_id: DC-2
+    pattern_type: variance_detection
+    quarter: Q3
+    expected_outcome: exception
+    exception_type: variance_explanation_inadequate
+    seed: 60
+
+  - scenario_id: q1_exception_dc2_boundary_01
+    control_id: DC-2
+    pattern_type: variance_detection
+    quarter: Q1
+    expected_outcome: exception
+    exception_type: boundary_edge_case
+    seed: 61
