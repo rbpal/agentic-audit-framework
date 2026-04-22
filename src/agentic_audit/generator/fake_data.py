@@ -21,6 +21,7 @@ from agentic_audit.models.scenario import (
     PatternType,
     Quarter,
     ScenarioSpec,
+    pick_exception_attribute,
 )
 
 # ── Constrained pools (fabricated — no real personnel / entities) ─────
@@ -81,19 +82,10 @@ _IT_APPLICATIONS: tuple[str, ...] = (
     "Fee Calc Platform, GL",
 )
 
-# ── Exception-attribute mapping: for exception scenarios, which ──────
-# attribute letter gets the "X" tickmark. Task 5 will use the same
-# mapping to emit consistent gold-answer JSON.
-_EXCEPTION_ATTRIBUTE: dict[ExceptionType, str] = {
-    "none": "",
-    "signoff_missing": "B",
-    "figure_mismatch": "D",
-    "billing_rate_change_with_amendment": "D",
-    "billing_rate_change_without_amendment": "D",
-    "variance_above_threshold_no_explanation": "B",
-    "variance_explanation_inadequate": "C",
-    "boundary_edge_case": "A",
-}
+# Exception-attribute mapping moved to models.scenario (Task 5 refactor):
+# single source of truth shared by this module (tickmark placement) and
+# gold_answer.build_gold_answer (JSON emission). Import the helper
+# ``pick_exception_attribute`` instead of re-declaring the map here.
 
 
 # ── Simple providers (stateless, rng-only) ────────────────────────────
@@ -170,14 +162,6 @@ def effectiveness_conclusion(outcome: ExpectedOutcome) -> str:
 def exceptions_noted(outcome: ExpectedOutcome) -> str:
     """Deterministic from outcome."""
     return "No" if outcome == "pass" else "Yes"
-
-
-def pick_exception_attribute(spec: ScenarioSpec) -> str:
-    """Return the attribute letter (A–F) that fails on this scenario, or ``""``.
-
-    Same mapping is used by Task 5 gold-JSON emitter for consistency.
-    """
-    return _EXCEPTION_ATTRIBUTE[spec.exception_type]
 
 
 def fake_tickmark(
