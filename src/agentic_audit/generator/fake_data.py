@@ -7,6 +7,14 @@ the global random state. Values drawn from constrained pools per the
 * USD currency (no GBP)
 * Greek-letter fund names (no fruits, no real entities)
 * Fabricated 2-letter initials (no real auditor names)
+
+NOTE ON CONTROL ATTRIBUTES AND DESCRIPTIONS: the attribute descriptions
+and testing procedures below reflect **generic SOX audit patterns**
+(PCAOB AS 2201 / COSO internal-control framework). They are not
+derived from, and do not reproduce, any specific prior-engagement
+attribute wording. Industry-neutral phrasing is used throughout
+("governing-document amendment", "supporting reference file",
+"supporting schedule") rather than sector-specific terminology.
 """
 
 from __future__ import annotations
@@ -189,18 +197,18 @@ _CONTROL_DESCRIPTIONS: dict[PatternType, tuple[str, ...]] = {
     "signoff_with_tieout": (
         "Quarterly review of the billing calculation with six-attribute "
         "sign-off covering formula accuracy, cross-tab tie-out, billing-rate "
-        "continuity, acquisitions/disposals, and rebate ownership rates.",
-        "The real-estate fee-calculation reviewer performs a six-attribute "
-        "check and signs off that the billing summary ties through to the "
-        "underlying backing schedules each quarter.",
+        "continuity, asset additions/retirements, and ownership-share rates.",
+        "The fee-calculation reviewer performs a six-attribute check and "
+        "signs off that the billing summary ties through to the underlying "
+        "supporting schedules each quarter.",
     ),
     "variance_detection": (
-        "Monthly variance analysis of each revenue stream by fund; any "
-        "period-over-period movement above a defined monetary threshold "
-        "must have a recorded explanation reviewed by the finance lead.",
+        "Monthly variance analysis of each revenue stream; any period-over-"
+        "period movement above a defined monetary threshold must have a "
+        "recorded explanation reviewed by the finance lead.",
         "The finance team compares current-period accruals to prior-period "
-        "accruals per fund; variances above threshold require written "
-        "explanation reconciled to upstream data.",
+        "accruals by revenue stream; variances above threshold require "
+        "written explanation reconciled to upstream source data.",
     ),
 }
 
@@ -230,15 +238,15 @@ _ATTRIBUTE_DESCRIPTIONS: dict[PatternType, dict[str, str]] = {
     "signoff_with_tieout": {
         "A": "Preparer signed off with date on the Checklist.",
         "B": "Independent reviewer signed off with date.",
-        "C": "Billing formulas tie to the underlying asset schedules.",
-        "D": "Billing rate change is supported by a governing-agreement amendment.",
-        "E": "Acquisitions and disposals appear on the liquidity schedule.",
-        "F": "Rebate ownership percentages match the rebate master file.",
+        "C": "Billing formulas tie to the underlying supporting schedules.",
+        "D": "Billing rate change is supported by a governing-document amendment.",
+        "E": "Asset additions and retirements appear on the supporting schedule.",
+        "F": "Ownership-share percentages match the supporting reference file.",
     },
     "variance_detection": {
         "A": "Current-period accrual data is loaded completely and accurately.",
         "B": "Variances above threshold have a recorded explanation.",
-        "C": "Explanations are consistent with upstream AUM / FX data.",
+        "C": "Explanations are consistent with upstream source data.",
         "D": "Reviewer signed off on the completed variance-analysis spreadsheet.",
     },
 }
@@ -256,15 +264,15 @@ _TOC_PROCEDURES: dict[PatternType, dict[str, str]] = {
     "signoff_with_tieout": {
         "A": "Inspect Checklist column F for preparer initials and date.",
         "B": "Inspect Checklist column G for reviewer initials and date.",
-        "C": "Recompute the billing total from the backing schedule and tie to the summary.",
-        "D": "Inspect the governing-agreement file for an amendment matching any rate change.",
-        "E": "Compare acquisitions and disposals listed on the liquidity schedule.",
-        "F": "Recompute rebate ownership percentages and agree to the master file.",
+        "C": "Recompute the billing total from the supporting schedule and tie to the summary.",
+        "D": "Inspect the governing-document file for an amendment matching any rate change.",
+        "E": "Compare asset additions and retirements listed on the supporting schedule.",
+        "F": "Recompute ownership-share percentages and agree to the supporting reference file.",
     },
     "variance_detection": {
         "A": "Agree current-period load totals to the upstream data feed.",
         "B": "For each variance above threshold, inspect the explanation column.",
-        "C": "For each explanation, agree the referenced figure to the AUM / FX source.",
+        "C": "For each explanation, agree the referenced figure to the upstream source.",
         "D": "Inspect the reviewer sign-off line on the variance-analysis workbook.",
     },
 }
@@ -316,10 +324,10 @@ def fake_exception_narrative(spec: ScenarioSpec) -> str:
         "signoff_missing": "Reviewer sign-off absent on one sample item.",
         "figure_mismatch": "Backing schedule total does not tie to summary figure.",
         "billing_rate_change_with_amendment": (
-            "Rate change present; governing-agreement amendment located."
+            "Rate change present; governing-document amendment located."
         ),
         "billing_rate_change_without_amendment": (
-            "Rate change present without corresponding governing-agreement amendment."
+            "Rate change present without corresponding governing-document amendment."
         ),
         "variance_above_threshold_no_explanation": (
             "Variance above threshold with no recorded explanation."
