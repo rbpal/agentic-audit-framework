@@ -35,6 +35,22 @@ _CONTROL_TO_PATTERN: dict[ControlId, PatternType] = {
     "DC-2": "variance_detection",
 }
 
+# Exception-attribute mapping: for exception scenarios, which attribute
+# letter gets the failing tickmark (and the "fail" flag in the gold JSON).
+# Single source of truth — consumed by both generator (Task 3) and
+# gold_answer (Task 5). Keeping it on the models side avoids a circular
+# import between generator and models.
+_EXCEPTION_ATTRIBUTE: dict[ExceptionType, str] = {
+    "none": "",
+    "signoff_missing": "B",
+    "figure_mismatch": "D",
+    "billing_rate_change_with_amendment": "D",
+    "billing_rate_change_without_amendment": "D",
+    "variance_above_threshold_no_explanation": "B",
+    "variance_explanation_inadequate": "C",
+    "boundary_edge_case": "A",
+}
+
 
 class ScenarioSpec(BaseModel):
     """A single synthetic audit scenario specification.
@@ -82,3 +98,15 @@ def load_manifest(path: Path) -> list[ScenarioSpec]:
     """
     data = yaml.safe_load(path.read_text())
     return [ScenarioSpec(**scenario) for scenario in data["scenarios"]]
+
+
+def pick_exception_attribute(spec: ScenarioSpec) -> str:
+    """Return the attribute letter (A–F) that fails on this scenario, or ``""``.
+
+    Single source of truth for exception-attribute mapping. Consumed by
+    both the generator (Task 3 — tickmark placement) and the gold-answer
+    builder (Task 5 — ``expected_per_attribute_result`` fail-flag). If
+    this mapping ever changes, BOTH the workbook tickmarks and the gold
+    JSON update atomically.
+    """
+    return _EXCEPTION_ATTRIBUTE[spec.exception_type]
