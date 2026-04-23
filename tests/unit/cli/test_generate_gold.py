@@ -37,20 +37,22 @@ _MANIFEST_PATH = _REPO_ROOT / "eval" / "gold_scenarios" / "manifest.yaml"
 
 def test_generate_gold_writes_twenty_xlsx_and_twenty_json(tmp_path: Path) -> None:
     generate_gold(_MANIFEST_PATH, tmp_path)
+    tocs = tmp_path / "tocs"
 
-    xlsx_files = sorted(tmp_path.glob("*.xlsx"))
-    json_files = sorted(tmp_path.glob("*.json"))
+    xlsx_files = sorted(tocs.glob("*.xlsx"))
+    json_files = sorted(tocs.glob("*.json"))
     assert len(xlsx_files) == 20
     assert len(json_files) == 20
 
 
 def test_generate_gold_filenames_match_scenario_ids(tmp_path: Path) -> None:
     generate_gold(_MANIFEST_PATH, tmp_path)
+    tocs = tmp_path / "tocs"
 
     specs = load_manifest(_MANIFEST_PATH)
     expected_ids = {spec.scenario_id for spec in specs}
-    xlsx_stems = {p.stem for p in tmp_path.glob("*.xlsx")}
-    json_stems = {p.stem for p in tmp_path.glob("*.json")}
+    xlsx_stems = {p.stem for p in tocs.glob("*.xlsx")}
+    json_stems = {p.stem for p in tocs.glob("*.json")}
 
     assert xlsx_stems == expected_ids
     assert json_stems == expected_ids
@@ -60,6 +62,8 @@ def test_generate_gold_returns_sorted_paths(tmp_path: Path) -> None:
     written = generate_gold(_MANIFEST_PATH, tmp_path)
     assert written == sorted(written)
     assert len(written) == 40
+    for p in written:
+        assert p.parent.name == "tocs", f"{p} is not under tocs/"
 
 
 # ── idempotency: byte-identical outputs across runs ──────────────────
@@ -74,12 +78,11 @@ def test_generate_gold_is_byte_idempotent(tmp_path: Path) -> None:
     first.mkdir()
     second.mkdir()
 
-    # Copy manifest into both — generate_gold resolves it from its arg
     generate_gold(_MANIFEST_PATH, first)
     generate_gold(_MANIFEST_PATH, second)
 
-    first_files = sorted(first.glob("*"))
-    second_files = sorted(second.glob("*"))
+    first_files = sorted((first / "tocs").glob("*"))
+    second_files = sorted((second / "tocs").glob("*"))
     assert [p.name for p in first_files] == [p.name for p in second_files]
 
     for a, b in zip(first_files, second_files, strict=True):
@@ -91,10 +94,11 @@ def test_generate_gold_is_byte_idempotent(tmp_path: Path) -> None:
 def test_generate_gold_overwrite_same_dir_is_idempotent(tmp_path: Path) -> None:
     """Running twice into the SAME directory (clear + regen) must be stable."""
     generate_gold(_MANIFEST_PATH, tmp_path)
-    first_bytes = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    tocs = tmp_path / "tocs"
+    first_bytes = {p.name: p.read_bytes() for p in tocs.iterdir()}
 
     generate_gold(_MANIFEST_PATH, tmp_path)
-    second_bytes = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    second_bytes = {p.name: p.read_bytes() for p in tocs.iterdir()}
 
     assert first_bytes == second_bytes
 
@@ -103,25 +107,44 @@ def test_generate_gold_overwrite_same_dir_is_idempotent(tmp_path: Path) -> None:
 
 
 def test_generate_gold_removes_stale_xlsx(tmp_path: Path) -> None:
-    stale = tmp_path / "q9_stale_scenario.xlsx"
+    tocs = tmp_path / "tocs"
+    tocs.mkdir()
+    stale = tocs / "q9_stale_scenario.xlsx"
     stale.write_bytes(b"stale zip bytes")
     generate_gold(_MANIFEST_PATH, tmp_path)
     assert not stale.exists()
 
 
 def test_generate_gold_removes_stale_json(tmp_path: Path) -> None:
-    stale = tmp_path / "q9_stale_scenario.json"
+    tocs = tmp_path / "tocs"
+    tocs.mkdir()
+    stale = tocs / "q9_stale_scenario.json"
     stale.write_text('{"scenario_id": "stale"}')
     generate_gold(_MANIFEST_PATH, tmp_path)
     assert not stale.exists()
 
 
 def test_generate_gold_preserves_manifest_yaml(tmp_path: Path) -> None:
-    """The manifest lives alongside outputs; clearing must not nuke it."""
+    """manifest.yaml lives at corpus root — clearing tocs/ must leave it alone."""
     manifest_copy = tmp_path / "manifest.yaml"
     manifest_copy.write_text(_MANIFEST_PATH.read_text())
     generate_gold(manifest_copy, tmp_path)
     assert manifest_copy.exists()
+
+
+def test_generate_gold_does_not_touch_siblings_of_tocs(tmp_path: Path) -> None:
+    """Future workpapers/ subtree must survive regen of tocs/ — the cleanup
+    is scoped to tocs/ only.
+    """
+    sibling = tmp_path / "workpapers" / "some_scenario"
+    sibling.mkdir(parents=True)
+    placeholder = sibling / "billing_calc.xlsx"
+    placeholder.write_bytes(b"placeholder for future workpaper")
+
+    generate_gold(_MANIFEST_PATH, tmp_path)
+
+    assert placeholder.exists()
+    assert placeholder.read_bytes() == b"placeholder for future workpaper"
 
 
 # ── error paths ───────────────────────────────────────────────────────
@@ -135,8 +158,8 @@ def test_generate_gold_raises_on_missing_manifest(tmp_path: Path) -> None:
 def test_generate_gold_creates_output_dir_if_absent(tmp_path: Path) -> None:
     nested = tmp_path / "fresh" / "gold"
     generate_gold(_MANIFEST_PATH, nested)
-    assert nested.is_dir()
-    assert len(list(nested.glob("*.xlsx"))) == 20
+    assert (nested / "tocs").is_dir()
+    assert len(list((nested / "tocs").glob("*.xlsx"))) == 20
 
 
 # ── strip_workbook_metadata helper ───────────────────────────────────
@@ -168,7 +191,7 @@ def test_generated_xlsx_entries_use_fixed_timestamp(tmp_path: Path) -> None:
     and idempotency silently breaks on wall-clock drift.
     """
     generate_gold(_MANIFEST_PATH, tmp_path)
-    xlsx_path = next(tmp_path.glob("*.xlsx"))
+    xlsx_path = next((tmp_path / "tocs").glob("*.xlsx"))
     with zipfile.ZipFile(xlsx_path) as z:
         for info in z.infolist():
             assert info.date_time == _ZIP_FIXED_DATE_TIME, (
@@ -189,7 +212,8 @@ def test_main_returns_zero_on_success(tmp_path: Path, capsys: pytest.CaptureFixt
 
 def test_main_writes_forty_files(tmp_path: Path) -> None:
     main(["--manifest", str(_MANIFEST_PATH), "--output-dir", str(tmp_path)])
-    assert len(list(tmp_path.iterdir())) == 40
+    files = list((tmp_path / "tocs").iterdir())
+    assert len(files) == 40
 
 
 # ── --hash-manifest-path flag + write_hash_manifest helper ───────────
@@ -205,24 +229,46 @@ def test_write_hash_manifest_produces_one_line_per_xlsx(tmp_path: Path) -> None:
     assert len(lines) == 20
 
 
-def test_write_hash_manifest_lines_are_scenario_id_space_hash(tmp_path: Path) -> None:
+def test_write_hash_manifest_lines_are_relative_path_space_hash(tmp_path: Path) -> None:
     generate_gold(_MANIFEST_PATH, tmp_path)
     baseline = tmp_path / "corpus_hashes.txt"
     write_hash_manifest(tmp_path, baseline)
 
     for line in baseline.read_text().splitlines():
-        scenario_id, digest = line.split()
-        assert (tmp_path / f"{scenario_id}.xlsx").exists()
+        rel_path, digest = line.split()
+        # Path is corpus-root-relative (POSIX), resolvable from corpus root
+        assert rel_path.startswith("tocs/")
+        assert (tmp_path / rel_path).exists()
         assert len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
 
 
-def test_write_hash_manifest_is_sorted_by_scenario_id(tmp_path: Path) -> None:
+def test_write_hash_manifest_is_sorted_by_relative_path(tmp_path: Path) -> None:
     generate_gold(_MANIFEST_PATH, tmp_path)
     baseline = tmp_path / "corpus_hashes.txt"
     write_hash_manifest(tmp_path, baseline)
 
-    ids = [line.split()[0] for line in baseline.read_text().splitlines()]
-    assert ids == sorted(ids)
+    paths = [line.split()[0] for line in baseline.read_text().splitlines()]
+    assert paths == sorted(paths)
+
+
+def test_write_hash_manifest_walks_subtree_recursively(tmp_path: Path) -> None:
+    """Baseline must cover every .xlsx under corpus_root, including future
+    workpapers/ entries — not just the top level.
+    """
+    generate_gold(_MANIFEST_PATH, tmp_path)
+    # Stage a fake workpaper to prove recursive walking
+    wp_dir = tmp_path / "workpapers" / "q1_pass_dc9_01"
+    wp_dir.mkdir(parents=True)
+    fake_wp = wp_dir / "billing_calc.xlsx"
+    # Reuse a real xlsx so it's a valid zip
+    fake_wp.write_bytes((tmp_path / "tocs").glob("*.xlsx").__next__().read_bytes())
+
+    baseline = tmp_path / "corpus_hashes.txt"
+    count = write_hash_manifest(tmp_path, baseline)
+
+    assert count == 21  # 20 tocs + 1 staged workpaper
+    rel_paths = [line.split()[0] for line in baseline.read_text().splitlines()]
+    assert "workpapers/q1_pass_dc9_01/billing_calc.xlsx" in rel_paths
 
 
 def test_write_hash_manifest_creates_parent_dir(tmp_path: Path) -> None:

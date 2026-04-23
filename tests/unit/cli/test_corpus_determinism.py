@@ -43,12 +43,15 @@ def _byte_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _corpus_byte_hashes(output_dir: Path) -> dict[str, str]:
-    return {p.name: _byte_hash(p) for p in sorted(output_dir.iterdir())}
+def _corpus_byte_hashes(corpus_root: Path) -> dict[str, str]:
+    """Byte-hash every .xlsx + .json under corpus_root/tocs/, keyed by filename."""
+    tocs = corpus_root / "tocs"
+    return {p.name: _byte_hash(p) for p in sorted(tocs.iterdir())}
 
 
-def _corpus_content_hashes(output_dir: Path) -> dict[str, str]:
-    return {p.name: content_hash(p) for p in sorted(output_dir.glob("*.xlsx"))}
+def _corpus_content_hashes(corpus_root: Path) -> dict[str, str]:
+    tocs = corpus_root / "tocs"
+    return {p.name: content_hash(p) for p in sorted(tocs.glob("*.xlsx"))}
 
 
 def test_corpus_byte_hashes_stable_across_regen(tmp_path: Path) -> None:
@@ -81,7 +84,7 @@ def test_corpus_content_hashes_stable_across_regen(tmp_path: Path) -> None:
 def test_no_placeholder_markers_in_any_workbook(tmp_path: Path) -> None:
     generate_gold(_MANIFEST_PATH, tmp_path)
 
-    for xlsx_path in sorted(tmp_path.glob("*.xlsx")):
+    for xlsx_path in sorted((tmp_path / "tocs").glob("*.xlsx")):
         wb = load_workbook(xlsx_path)
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
@@ -113,10 +116,10 @@ def test_all_twenty_workbooks_have_distinct_content_hashes(tmp_path: Path) -> No
 # ── one-number corpus digest ─────────────────────────────────────────
 
 
-def _corpus_digest(output_dir: Path) -> str:
+def _corpus_digest(corpus_root: Path) -> str:
     """SHA-256 over ``<name>:<content_hash>\\n`` lines, sorted by name."""
     h = hashlib.sha256()
-    for name, ch in sorted(_corpus_content_hashes(output_dir).items()):
+    for name, ch in sorted(_corpus_content_hashes(corpus_root).items()):
         h.update(f"{name}:{ch}\n".encode())
     return h.hexdigest()
 
