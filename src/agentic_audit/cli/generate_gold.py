@@ -115,44 +115,52 @@ def _clear_output_dir(output_dir: Path) -> None:
             path.unlink()
 
 
-def generate_gold(manifest_path: Path, output_dir: Path) -> list[Path]:
-    """Regenerate the full corpus from ``manifest_path`` into ``output_dir``.
+def generate_gold(manifest_path: Path, corpus_root: Path) -> list[Path]:
+    """Regenerate the full corpus from ``manifest_path`` into ``corpus_root``.
 
-    Deletes any existing ``.xlsx`` / ``.json`` in ``output_dir``, then writes
-    one of each per scenario. Returns the sorted list of written paths.
+    Writes one ``.xlsx`` + one ``.json`` per scenario into
+    ``corpus_root/tocs/``. Clears any existing ``.xlsx`` / ``.json`` in that
+    subdirectory before writing, but leaves the rest of ``corpus_root``
+    untouched (``manifest.yaml``, future ``workpapers/``, etc.).
+
+    Returns the sorted list of written paths (all under ``tocs/``).
     """
     if not manifest_path.is_file():
         raise FileNotFoundError(f"manifest not found: {manifest_path}")
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    _clear_output_dir(output_dir)
+    tocs_dir = corpus_root / "tocs"
+    tocs_dir.mkdir(parents=True, exist_ok=True)
+    _clear_output_dir(tocs_dir)
 
     specs = load_manifest(manifest_path)
     written: list[Path] = []
 
     for spec in specs:
         wb = populate_workbook(render_toc_sheet(spec), spec)
-        xlsx_path = output_dir / f"{spec.scenario_id}.xlsx"
+        # _ref suffix on xlsx encodes provenance (reference TOC vs future
+        # agent-generated _gen.xlsx). JSON gold answers stay unadorned —
+        # they're a different artefact type (answer key, not a TOC).
+        xlsx_path = tocs_dir / f"{spec.scenario_id}_ref.xlsx"
         _save_deterministic(wb, xlsx_path)
         written.append(xlsx_path)
 
         gold = build_gold_answer(spec)
-        json_path = output_dir / f"{spec.scenario_id}.json"
+        json_path = tocs_dir / f"{spec.scenario_id}.json"
         json_path.write_text(gold_answer_to_json(gold) + "\n")
         written.append(json_path)
 
     return sorted(written)
 
 
-def write_hash_manifest(xlsx_dir: Path, manifest_path: Path) -> int:
-    """Write ``<scenario_id> <content_hash>`` lines for every .xlsx in ``xlsx_dir``.
+def write_hash_manifest(corpus_root: Path, manifest_path: Path) -> int:
+    """Write ``<relative_path> <content_hash>`` lines for every .xlsx under ``corpus_root``.
 
-    The file is the committed tripwire baseline — CI asserts the current
-    corpus still hashes to these values, catching unintended generator
-    drift across PRs.
+    Walks ``corpus_root`` recursively so the baseline captures tocs/ today
+    and any future workpapers/ subtrees without code changes. Paths are
+    POSIX-style relative to ``corpus_root`` for cross-platform consistency.
     """
-    xlsx_files = sorted(xlsx_dir.glob("*.xlsx"))
-    lines = [f"{p.stem} {content_hash(p)}\n" for p in xlsx_files]
+    xlsx_files = sorted(corpus_root.rglob("*.xlsx"))
+    lines = [f"{p.relative_to(corpus_root).as_posix()} {content_hash(p)}\n" for p in xlsx_files]
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text("".join(lines))
     return len(xlsx_files)
@@ -174,29 +182,31 @@ def main(argv: list[str] | None = None) -> int:
         "--output-dir",
         type=Path,
         default=None,
-        help="Directory to write outputs (default: <repo>/eval/gold_scenarios)",
+        help=(
+            "Corpus root — tocs/ and future workpapers/ are written inside it "
+            "(default: <repo>/eval/gold_scenarios)"
+        ),
     )
     parser.add_argument(
         "--hash-manifest-path",
         type=Path,
         default=None,
         help=(
-            "If set, also write <scenario_id> <content_hash> lines to this file "
-            "for use as a committed baseline. "
-            "(canonical: tests/fixtures/corpus_hashes.txt)"
+            "If set, also write <relative_path> <content_hash> lines for every "
+            ".xlsx under the corpus root. (canonical: tests/fixtures/corpus_hashes.txt)"
         ),
     )
     args = parser.parse_args(argv)
 
     repo_root = _default_repo_root()
     manifest_path = args.manifest or repo_root / "eval" / "gold_scenarios" / "manifest.yaml"
-    output_dir = args.output_dir or repo_root / "eval" / "gold_scenarios"
+    corpus_root = args.output_dir or repo_root / "eval" / "gold_scenarios"
 
-    written = generate_gold(manifest_path, output_dir)
-    print(f"Wrote {len(written)} files to {output_dir}")
+    written = generate_gold(manifest_path, corpus_root)
+    print(f"Wrote {len(written)} files to {corpus_root}")
 
     if args.hash_manifest_path is not None:
-        count = write_hash_manifest(output_dir, args.hash_manifest_path)
+        count = write_hash_manifest(corpus_root, args.hash_manifest_path)
         print(f"Wrote {count} hash lines to {args.hash_manifest_path}")
 
     return 0
