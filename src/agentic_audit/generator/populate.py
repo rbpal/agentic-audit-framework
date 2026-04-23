@@ -19,6 +19,7 @@ from agentic_audit.generator import fake_data
 from agentic_audit.models.scenario import ScenarioSpec
 
 _PLACEHOLDER_RE = re.compile(r"^<([a-z_0-9]+)>$")
+_EMBEDDED_PLACEHOLDER_RE = re.compile(r"<([a-z_0-9]+)>")
 _SAMPLE_PLACEHOLDER_RE = re.compile(r"^sample_(\d+)_(\w+)$")
 _ATTRIBUTE_PLACEHOLDER_RE = re.compile(r"^attribute_([A-F])_(\w+)$")
 
@@ -29,6 +30,11 @@ def populate_workbook(wb: Workbook, spec: ScenarioSpec) -> Workbook:
     Mutates ``wb`` in place; returns for chaining convenience.
     Raises ``ValueError`` on any unrecognized placeholder name — the
     guarantee is that no ``<xxx>`` markers remain after a successful call.
+
+    Whole-cell markers (``<foo>``) preserve the resolver's native return
+    type (e.g. ``datetime.date``, ``int``). Markers embedded in a
+    compound string (``"DC-9: <control_name>"``) are substituted via
+    ``str()`` since they must coexist with surrounding literal text.
     """
     rng = random.Random(spec.seed)
     ws = wb.active
@@ -36,12 +42,16 @@ def populate_workbook(wb: Workbook, spec: ScenarioSpec) -> Workbook:
 
     for row in ws.iter_rows():
         for cell in row:
-            if not isinstance(cell.value, str):
+            if not isinstance(cell.value, str) or "<" not in cell.value:
                 continue
-            match = _PLACEHOLDER_RE.match(cell.value)
-            if match is None:
+            whole = _PLACEHOLDER_RE.match(cell.value)
+            if whole is not None:
+                cell.value = _resolve_placeholder(whole.group(1), cell, rng, spec)
                 continue
-            cell.value = _resolve_placeholder(match.group(1), cell, rng, spec)
+            cell.value = _EMBEDDED_PLACEHOLDER_RE.sub(
+                lambda m: str(_resolve_placeholder(m.group(1), cell, rng, spec)),  # noqa: B023 — re.sub is synchronous; cell is stable for the call
+                cell.value,
+            )
 
     return wb
 
