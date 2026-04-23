@@ -15,6 +15,8 @@ from agentic_audit.models.scenario import (
     PatternType,
     Quarter,
     ScenarioSpec,
+    WorkpaperSpec,
+    WorkpaperType,
     load_manifest,
 )
 
@@ -28,6 +30,8 @@ __all__ = [
     "PatternType",
     "Quarter",
     "ScenarioSpec",
+    "WorkpaperSpec",
+    "WorkpaperType",
     "build_gold_answer",
     "gold_answer_to_json",
     "load_gold_answer",

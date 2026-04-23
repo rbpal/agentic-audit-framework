@@ -28,6 +28,21 @@ ExceptionType: TypeAlias = Literal[
     "boundary_edge_case",
 ]
 
+# Supporting-workpaper types a scenario may reference. Extended in Task 12+
+# when concrete writers arrive; Task 11 reserves the initial enum values.
+#
+# * ``billing_calculation`` — used by DC-9 (sign-off with tie-out) to back
+#   figure_mismatch / billing_rate_change_* scenarios.
+# * ``governing_document_amendment`` — used by DC-9 rate-change scenarios;
+#   presence or absence of the amendment file aligns with the tickmark.
+# * ``variance_analysis`` — used by DC-2 (variance detection) to back
+#   variance_above_threshold_no_explanation / _inadequate / boundary scenarios.
+WorkpaperType: TypeAlias = Literal[
+    "billing_calculation",
+    "governing_document_amendment",
+    "variance_analysis",
+]
+
 # Pattern <-> control consistency. Extending to a new control = one entry here
 # plus one Literal addition above.
 _CONTROL_TO_PATTERN: dict[ControlId, PatternType] = {
@@ -52,10 +67,39 @@ _EXCEPTION_ATTRIBUTE: dict[ExceptionType, str] = {
 }
 
 
+class WorkpaperSpec(BaseModel):
+    """A single supporting W/P that a scenario's TOC references.
+
+    Declares structural metadata — *which file* backs *which TOC reference
+    code*. The file's content (amounts, periods, tickmark-worthy values)
+    is derived at generation time from the parent ``ScenarioSpec`` —
+    future W/P writers (Task 12+) read ``scenario.exception_type`` and
+    emit content that either agrees or disagrees with the TOC per the
+    cross-file consistency rules (Q7.13 Option B).
+
+    Fields:
+
+    * ``type`` — the writer module selector.
+    * ``filename`` — relative name under
+      ``eval/gold_scenarios/workpapers/<scenario_id>/``. No `_ref` suffix;
+      supporting W/Ps are not TOCs.
+    * ``toc_reference_code`` — the code the TOC cell already prints (e.g.
+      ``"DC-5.7"``, ``"6.03"``). The agent (Step 2+) is expected to
+      extract this code and locate the backing file.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    type: WorkpaperType
+    filename: str = Field(..., min_length=1, max_length=80)
+    toc_reference_code: str = Field(..., min_length=1, max_length=20)
+
+
 class ScenarioSpec(BaseModel):
     """A single synthetic audit scenario specification.
 
-    Drives deterministic generation of one .xlsx + one gold .json pair.
+    Drives deterministic generation of one .xlsx + one gold .json pair,
+    plus any supporting W/Ps declared in ``workpapers`` (Task 12+).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
@@ -67,6 +111,7 @@ class ScenarioSpec(BaseModel):
     expected_outcome: ExpectedOutcome
     exception_type: ExceptionType = "none"
     seed: int = Field(..., ge=0)
+    workpapers: tuple[WorkpaperSpec, ...] = ()
 
     @model_validator(mode="after")
     def _pattern_matches_control(self) -> ScenarioSpec:
@@ -87,6 +132,25 @@ class ScenarioSpec(BaseModel):
             )
         if self.expected_outcome == "exception" and self.exception_type == "none":
             raise ValueError("expected_outcome='exception' requires a specific exception_type")
+        return self
+
+    @model_validator(mode="after")
+    def _workpaper_filenames_unique(self) -> ScenarioSpec:
+        filenames = [wp.filename for wp in self.workpapers]
+        if len(filenames) != len(set(filenames)):
+            raise ValueError(
+                f"workpaper filenames must be unique within a scenario, got {filenames!r}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _workpaper_reference_codes_unique(self) -> ScenarioSpec:
+        codes = [wp.toc_reference_code for wp in self.workpapers]
+        if len(codes) != len(set(codes)):
+            raise ValueError(
+                f"workpaper toc_reference_code values must be unique within a "
+                f"scenario, got {codes!r}"
+            )
         return self
 
 
