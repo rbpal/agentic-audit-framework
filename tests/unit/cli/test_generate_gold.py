@@ -46,16 +46,21 @@ def test_generate_gold_writes_twenty_xlsx_and_twenty_json(tmp_path: Path) -> Non
 
 
 def test_generate_gold_filenames_match_scenario_ids(tmp_path: Path) -> None:
+    """xlsx files carry _ref suffix; json gold answers do not."""
     generate_gold(_MANIFEST_PATH, tmp_path)
     tocs = tmp_path / "tocs"
 
     specs = load_manifest(_MANIFEST_PATH)
     expected_ids = {spec.scenario_id for spec in specs}
-    xlsx_stems = {p.stem for p in tocs.glob("*.xlsx")}
+    # xlsx stem is "<scenario_id>_ref" — strip suffix before comparing
+    xlsx_scenario_ids = {p.stem.removesuffix("_ref") for p in tocs.glob("*.xlsx")}
     json_stems = {p.stem for p in tocs.glob("*.json")}
 
-    assert xlsx_stems == expected_ids
+    assert xlsx_scenario_ids == expected_ids
     assert json_stems == expected_ids
+    # Every xlsx must carry _ref — no bare <scenario_id>.xlsx allowed
+    for p in tocs.glob("*.xlsx"):
+        assert p.stem.endswith("_ref"), f"{p.name} missing _ref suffix"
 
 
 def test_generate_gold_returns_sorted_paths(tmp_path: Path) -> None:
@@ -269,6 +274,15 @@ def test_write_hash_manifest_walks_subtree_recursively(tmp_path: Path) -> None:
     assert count == 21  # 20 tocs + 1 staged workpaper
     rel_paths = [line.split()[0] for line in baseline.read_text().splitlines()]
     assert "workpapers/q1_pass_dc9_01/billing_calc.xlsx" in rel_paths
+
+
+def test_generate_gold_xlsx_stems_end_with_ref(tmp_path: Path) -> None:
+    """Regression guard for Q7.15 naming decision — every reference TOC
+    carries the _ref suffix; bare <scenario_id>.xlsx is forbidden.
+    """
+    generate_gold(_MANIFEST_PATH, tmp_path)
+    for p in (tmp_path / "tocs").glob("*.xlsx"):
+        assert p.stem.endswith("_ref"), f"{p.name} missing _ref suffix"
 
 
 def test_write_hash_manifest_creates_parent_dir(tmp_path: Path) -> None:

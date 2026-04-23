@@ -137,7 +137,10 @@ def generate_gold(manifest_path: Path, corpus_root: Path) -> list[Path]:
 
     for spec in specs:
         wb = populate_workbook(render_toc_sheet(spec), spec)
-        xlsx_path = tocs_dir / f"{spec.scenario_id}.xlsx"
+        # _ref suffix on xlsx encodes provenance (reference TOC vs future
+        # agent-generated _gen.xlsx). JSON gold answers stay unadorned —
+        # they're a different artefact type (answer key, not a TOC).
+        xlsx_path = tocs_dir / f"{spec.scenario_id}_ref.xlsx"
         _save_deterministic(wb, xlsx_path)
         written.append(xlsx_path)
 

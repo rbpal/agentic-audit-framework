@@ -108,3 +108,18 @@ def test_all_baseline_paths_are_under_tocs() -> None:
         assert rel_path.startswith("tocs/"), (
             f"Unexpected baseline path {rel_path!r} — expected prefix 'tocs/'"
         )
+
+
+def test_all_tocs_carry_ref_suffix() -> None:
+    """Q7.15 naming invariant — every reference TOC ends in ``_ref.xlsx``.
+
+    Bare ``<scenario_id>.xlsx`` under ``tocs/`` is forbidden; the ``_ref``
+    suffix distinguishes reference TOCs from future agent-produced
+    ``_gen.xlsx`` outputs that will land under ``eval/agent_outputs/``.
+    """
+    for rel_path in _parse_baseline():
+        filename = rel_path.rsplit("/", 1)[-1]
+        stem = filename.removesuffix(".xlsx")
+        assert stem.endswith("_ref"), (
+            f"{rel_path!r} does not carry the _ref suffix — Q7.15 violated"
+        )
