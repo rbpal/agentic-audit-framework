@@ -1,0 +1,15 @@
+{
+  "control_id": "DC-9",
+  "expected_exception_narrative_keywords": [],
+  "expected_final_verdict": "Effective",
+  "expected_outcome": "pass",
+  "expected_per_attribute_result": {
+    "DC-9.A": "pass",
+    "DC-9.B": "pass",
+    "DC-9.C": "pass",
+    "DC-9.D": "pass",
+    "DC-9.E": "pass",
+    "DC-9.F": "pass"
+  },
+  "scenario_id": "q3_pass_dc9_02"
+}
