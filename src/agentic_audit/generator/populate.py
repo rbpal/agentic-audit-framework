@@ -18,8 +18,14 @@ from openpyxl.cell.cell import Cell
 from agentic_audit.generator import fake_data
 from agentic_audit.models.scenario import ScenarioSpec
 
-_PLACEHOLDER_RE = re.compile(r"^<([a-z_0-9]+)>$")
-_EMBEDDED_PLACEHOLDER_RE = re.compile(r"<([a-z_0-9]+)>")
+# NOTE: placeholder charset must be \w (A-Za-z0-9_) — the lowercase-only
+# character class [a-z_0-9] silently rejects uppercase-bearing markers like
+# <attribute_A_description>, leaving them unresolved in the output. The
+# dispatch regexes below use [A-F] and expect this outer charset to admit
+# uppercase letters. See tests/unit/generator/test_populate.py coverage
+# for the regression case.
+_PLACEHOLDER_RE = re.compile(r"^<(\w+)>$")
+_EMBEDDED_PLACEHOLDER_RE = re.compile(r"<(\w+)>")
 _SAMPLE_PLACEHOLDER_RE = re.compile(r"^sample_(\d+)_(\w+)$")
 _ATTRIBUTE_PLACEHOLDER_RE = re.compile(r"^attribute_([A-F])_(\w+)$")
 

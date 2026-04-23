@@ -16,7 +16,7 @@ from agentic_audit.generator import populate_workbook, render_toc_sheet
 from agentic_audit.generator.populate import _resolve_placeholder
 from agentic_audit.models.scenario import ControlId, PatternType, ScenarioSpec
 
-_PLACEHOLDER_RE = re.compile(r"^<[a-z_0-9]+>$")
+_PLACEHOLDER_RE = re.compile(r"^<\w+>$")
 
 
 def _make_spec(
@@ -77,6 +77,45 @@ def test_populate_removes_all_placeholders_dc2() -> None:
                 assert not _PLACEHOLDER_RE.match(cell), (
                     f"Placeholder {cell!r} remains after populate"
                 )
+
+
+def test_populate_resolves_uppercase_bearing_attribute_markers_dc9() -> None:
+    """Regression: ``<attribute_A_description>`` and friends carry an
+    uppercase letter. A prior populator regex ``[a-z_0-9]+`` silently
+    rejected them, leaving the markers as literal text in the output.
+    This test explicitly asserts every A-F marker is resolved.
+    """
+    spec = _make_spec("DC-9", "signoff_with_tieout")
+    wb = populate_workbook(render_toc_sheet(spec), spec)
+    ws = wb.active
+    assert ws is not None
+    all_text = " ".join(
+        str(v) for row in ws.iter_rows(values_only=True) for v in row if isinstance(v, str)
+    )
+    for letter in "ABCDEF":
+        assert f"<attribute_{letter}_description>" not in all_text, (
+            f"<attribute_{letter}_description> was not resolved"
+        )
+        assert f"<attribute_{letter}_toc_procedure>" not in all_text, (
+            f"<attribute_{letter}_toc_procedure> was not resolved"
+        )
+
+
+def test_populate_resolves_uppercase_bearing_attribute_markers_dc2() -> None:
+    spec = _make_spec("DC-2", "variance_detection")
+    wb = populate_workbook(render_toc_sheet(spec), spec)
+    ws = wb.active
+    assert ws is not None
+    all_text = " ".join(
+        str(v) for row in ws.iter_rows(values_only=True) for v in row if isinstance(v, str)
+    )
+    for letter in "ABCD":
+        assert f"<attribute_{letter}_description>" not in all_text, (
+            f"<attribute_{letter}_description> was not resolved"
+        )
+        assert f"<attribute_{letter}_toc_procedure>" not in all_text, (
+            f"<attribute_{letter}_toc_procedure> was not resolved"
+        )
 
 
 # ── Seed reproducibility ─────────────────────────────────────────────

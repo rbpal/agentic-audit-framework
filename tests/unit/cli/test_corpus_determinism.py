@@ -29,7 +29,11 @@ from agentic_audit.generator.content_hash import content_hash
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _MANIFEST_PATH = _REPO_ROOT / "eval" / "gold_scenarios" / "manifest.yaml"
 
-_PLACEHOLDER_RE = re.compile(r"<[a-z_0-9]+>")
+# Detection charset must admit uppercase — a narrow [a-z_0-9] charset
+# missed markers like <attribute_A_description> that slipped past the
+# populator for the same reason. Keep the test's charset strictly broader
+# than the populator's so test can catch populator mistakes.
+_PLACEHOLDER_RE = re.compile(r"<\w+>")
 
 
 # ── byte + content determinism across runs ───────────────────────────
