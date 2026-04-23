@@ -23,18 +23,30 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import re
+import shutil
 import sys
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 from openpyxl import Workbook
 
 from agentic_audit.generator import content_hash, populate_workbook, render_toc_sheet
+from agentic_audit.generator.workpaper_writers import render_billing_calc
 from agentic_audit.models import (
+    ScenarioSpec,
+    WorkpaperSpec,
+    WorkpaperType,
     build_gold_answer,
     gold_answer_to_json,
     load_manifest,
 )
+
+# Dispatch table — maps declared WorkpaperType to its writer function.
+# Extended in Task 13 (governing-doc amendment) + Task 14 (variance workbook).
+_WORKPAPER_WRITERS: dict[WorkpaperType, Callable[[ScenarioSpec, WorkpaperSpec], Workbook]] = {
+    "billing_calculation": render_billing_calc,
+}
 
 _FIXED_EPOCH = dt.datetime(2000, 1, 1, 0, 0, 0)
 _ZIP_FIXED_DATE_TIME = (1980, 1, 1, 0, 0, 0)
@@ -115,15 +127,62 @@ def _clear_output_dir(output_dir: Path) -> None:
             path.unlink()
 
 
+def _clear_workpapers_dir(corpus_root: Path) -> None:
+    """Remove the entire ``workpapers/`` subtree.
+
+    All workpaper content is derived from ``ScenarioSpec.workpapers`` — a
+    scenario that no longer declares a W/P must leave no orphan file
+    behind. The whole tree is wiped and rebuilt from scratch.
+    """
+    wp_root = corpus_root / "workpapers"
+    if wp_root.is_dir():
+        shutil.rmtree(wp_root)
+
+
+def _write_scenario_workpapers(corpus_root: Path, spec: ScenarioSpec) -> list[Path]:
+    """Emit every W/P declared by ``spec.workpapers`` under
+    ``corpus_root/workpapers/<scenario_id>/``.
+
+    Dispatches on ``wp.type`` against ``_WORKPAPER_WRITERS``. Raises
+    ``ValueError`` on an unknown type — forces Task 13+ to register
+    writers explicitly before manifest entries can reference them.
+    """
+    if not spec.workpapers:
+        return []
+
+    wp_dir = corpus_root / "workpapers" / spec.scenario_id
+    wp_dir.mkdir(parents=True, exist_ok=True)
+
+    written: list[Path] = []
+    for wp in spec.workpapers:
+        writer = _WORKPAPER_WRITERS.get(wp.type)
+        if writer is None:
+            raise ValueError(
+                f"No writer registered for workpaper type {wp.type!r} "
+                f"(scenario {spec.scenario_id}); add one to _WORKPAPER_WRITERS"
+            )
+        wb = writer(spec, wp)
+        wp_path = wp_dir / wp.filename
+        _save_deterministic(wb, wp_path)
+        written.append(wp_path)
+    return written
+
+
 def generate_gold(manifest_path: Path, corpus_root: Path) -> list[Path]:
     """Regenerate the full corpus from ``manifest_path`` into ``corpus_root``.
 
-    Writes one ``.xlsx`` + one ``.json`` per scenario into
-    ``corpus_root/tocs/``. Clears any existing ``.xlsx`` / ``.json`` in that
-    subdirectory before writing, but leaves the rest of ``corpus_root``
-    untouched (``manifest.yaml``, future ``workpapers/``, etc.).
+    Produces, per scenario:
 
-    Returns the sorted list of written paths (all under ``tocs/``).
+    * ``corpus_root/tocs/<scenario_id>_ref.xlsx`` — reference TOC
+    * ``corpus_root/tocs/<scenario_id>.json`` — gold-answer JSON
+    * ``corpus_root/workpapers/<scenario_id>/<filename>`` × N — supporting
+      workpapers, one per entry in ``spec.workpapers``
+
+    Clears ``tocs/`` and the entire ``workpapers/`` subtree before
+    writing so stale artefacts cannot linger. ``manifest.yaml`` and
+    sibling directories are untouched.
+
+    Returns the sorted list of every written path.
     """
     if not manifest_path.is_file():
         raise FileNotFoundError(f"manifest not found: {manifest_path}")
@@ -131,6 +190,7 @@ def generate_gold(manifest_path: Path, corpus_root: Path) -> list[Path]:
     tocs_dir = corpus_root / "tocs"
     tocs_dir.mkdir(parents=True, exist_ok=True)
     _clear_output_dir(tocs_dir)
+    _clear_workpapers_dir(corpus_root)
 
     specs = load_manifest(manifest_path)
     written: list[Path] = []
@@ -148,6 +208,8 @@ def generate_gold(manifest_path: Path, corpus_root: Path) -> list[Path]:
         json_path = tocs_dir / f"{spec.scenario_id}.json"
         json_path.write_text(gold_answer_to_json(gold) + "\n")
         written.append(json_path)
+
+        written.extend(_write_scenario_workpapers(corpus_root, spec))
 
     return sorted(written)
 

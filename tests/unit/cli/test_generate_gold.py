@@ -66,9 +66,15 @@ def test_generate_gold_filenames_match_scenario_ids(tmp_path: Path) -> None:
 def test_generate_gold_returns_sorted_paths(tmp_path: Path) -> None:
     written = generate_gold(_MANIFEST_PATH, tmp_path)
     assert written == sorted(written)
-    assert len(written) == 40
+    # 20 TOC xlsx + 20 gold JSON + 10 billing-calc W/P (DC-9 scenarios)
+    assert len(written) == 50
+    # TOCs + JSONs live directly under tocs/; W/Ps under workpapers/<scenario_id>/
     for p in written:
-        assert p.parent.name == "tocs", f"{p} is not under tocs/"
+        parent_name = p.parent.name
+        grandparent = p.parent.parent.name if p.parent.parent.name else ""
+        assert parent_name == "tocs" or grandparent == "workpapers", (
+            f"{p} is not under tocs/ or workpapers/<scenario_id>/"
+        )
 
 
 # ── idempotency: byte-identical outputs across runs ──────────────────
@@ -137,19 +143,43 @@ def test_generate_gold_preserves_manifest_yaml(tmp_path: Path) -> None:
     assert manifest_copy.exists()
 
 
-def test_generate_gold_does_not_touch_siblings_of_tocs(tmp_path: Path) -> None:
-    """Future workpapers/ subtree must survive regen of tocs/ — the cleanup
-    is scoped to tocs/ only.
+def test_generate_gold_does_not_touch_unrelated_siblings(tmp_path: Path) -> None:
+    """Cleanup is scoped to ``tocs/`` and ``workpapers/`` — any other sibling
+    file or directory at the corpus root must survive regeneration untouched.
+
+    ``workpapers/`` itself IS wiped (Task 12 — all W/P content is derived
+    from the manifest); the test above covers that case. This test pins
+    down that *unrelated* sibs (README, custom fixtures, docs) stay.
     """
-    sibling = tmp_path / "workpapers" / "some_scenario"
-    sibling.mkdir(parents=True)
-    placeholder = sibling / "billing_calc.xlsx"
-    placeholder.write_bytes(b"placeholder for future workpaper")
+    readme = tmp_path / "README.txt"
+    readme.write_text("custom contributor notes")
+
+    custom_dir = tmp_path / "local_fixtures"
+    custom_dir.mkdir()
+    (custom_dir / "keep_me.txt").write_text("do not delete")
 
     generate_gold(_MANIFEST_PATH, tmp_path)
 
-    assert placeholder.exists()
-    assert placeholder.read_bytes() == b"placeholder for future workpaper"
+    assert readme.exists()
+    assert readme.read_text() == "custom contributor notes"
+    assert (custom_dir / "keep_me.txt").exists()
+
+
+def test_generate_gold_wipes_and_rebuilds_workpapers_dir(tmp_path: Path) -> None:
+    """Stale W/Ps must not linger — scenarios that no longer declare a
+    workpaper must leave no orphan file behind. The entire workpapers/
+    subtree is regenerated from the manifest on every run.
+    """
+    # Stage an orphan W/P under a scenario that doesn't declare workpapers
+    orphan_dir = tmp_path / "workpapers" / "q1_pass_dc2_01"  # DC-2 scenario = no W/P
+    orphan_dir.mkdir(parents=True)
+    orphan = orphan_dir / "stale_from_old_run.xlsx"
+    orphan.write_bytes(b"stale")
+
+    generate_gold(_MANIFEST_PATH, tmp_path)
+
+    assert not orphan.exists()
+    assert not orphan_dir.exists()  # DC-2 scenarios declare no W/Ps → no dir
 
 
 # ── error paths ───────────────────────────────────────────────────────
@@ -211,14 +241,27 @@ def test_main_returns_zero_on_success(tmp_path: Path, capsys: pytest.CaptureFixt
     rc = main(["--manifest", str(_MANIFEST_PATH), "--output-dir", str(tmp_path)])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "40" in out
+    # Output message says "Wrote N files" — N is now 50 (40 TOC artefacts + 10 W/Ps)
+    assert "50" in out
     assert str(tmp_path) in out
 
 
-def test_main_writes_forty_files(tmp_path: Path) -> None:
+def test_main_writes_forty_toc_artefacts(tmp_path: Path) -> None:
     main(["--manifest", str(_MANIFEST_PATH), "--output-dir", str(tmp_path)])
-    files = list((tmp_path / "tocs").iterdir())
-    assert len(files) == 40
+    toc_files = list((tmp_path / "tocs").iterdir())
+    assert len(toc_files) == 40
+
+
+def test_main_writes_ten_billing_calc_workpapers(tmp_path: Path) -> None:
+    """Task 12 — every DC-9 scenario declares a billing_calc; DC-2 scenarios do not."""
+    main(["--manifest", str(_MANIFEST_PATH), "--output-dir", str(tmp_path)])
+    wp_root = tmp_path / "workpapers"
+    billing_calcs = list(wp_root.rglob("billing_calc.xlsx"))
+    assert len(billing_calcs) == 10
+    # Each lives under workpapers/<scenario_id>/billing_calc.xlsx
+    for p in billing_calcs:
+        assert p.parent.parent == wp_root
+        assert "dc9" in p.parent.name, f"billing_calc emitted under non-DC9 scenario: {p}"
 
 
 # ── --hash-manifest-path flag + write_hash_manifest helper ───────────
@@ -229,9 +272,10 @@ def test_write_hash_manifest_produces_one_line_per_xlsx(tmp_path: Path) -> None:
     baseline = tmp_path / "corpus_hashes.txt"
     count = write_hash_manifest(tmp_path, baseline)
 
-    assert count == 20
+    # 20 TOCs + 10 billing-calc W/Ps (Task 12 — DC-9 scenarios only)
+    assert count == 30
     lines = baseline.read_text().splitlines()
-    assert len(lines) == 20
+    assert len(lines) == 30
 
 
 def test_write_hash_manifest_lines_are_relative_path_space_hash(tmp_path: Path) -> None:
@@ -241,8 +285,8 @@ def test_write_hash_manifest_lines_are_relative_path_space_hash(tmp_path: Path) 
 
     for line in baseline.read_text().splitlines():
         rel_path, digest = line.split()
-        # Path is corpus-root-relative (POSIX), resolvable from corpus root
-        assert rel_path.startswith("tocs/")
+        # Path is corpus-root-relative (POSIX); lives under tocs/ or workpapers/
+        assert rel_path.startswith(("tocs/", "workpapers/"))
         assert (tmp_path / rel_path).exists()
         assert len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
 
@@ -257,23 +301,19 @@ def test_write_hash_manifest_is_sorted_by_relative_path(tmp_path: Path) -> None:
 
 
 def test_write_hash_manifest_walks_subtree_recursively(tmp_path: Path) -> None:
-    """Baseline must cover every .xlsx under corpus_root, including future
-    workpapers/ entries — not just the top level.
+    """Baseline must cover every .xlsx under corpus_root — tocs/ and
+    workpapers/ subtrees both appear, no manual enumeration required.
     """
     generate_gold(_MANIFEST_PATH, tmp_path)
-    # Stage a fake workpaper to prove recursive walking
-    wp_dir = tmp_path / "workpapers" / "q1_pass_dc9_01"
-    wp_dir.mkdir(parents=True)
-    fake_wp = wp_dir / "billing_calc.xlsx"
-    # Reuse a real xlsx so it's a valid zip
-    fake_wp.write_bytes((tmp_path / "tocs").glob("*.xlsx").__next__().read_bytes())
-
     baseline = tmp_path / "corpus_hashes.txt"
     count = write_hash_manifest(tmp_path, baseline)
 
-    assert count == 21  # 20 tocs + 1 staged workpaper
+    # Task 12 produces 20 tocs + 10 billing-calc W/Ps = 30 total
+    assert count == 30
     rel_paths = [line.split()[0] for line in baseline.read_text().splitlines()]
-    assert "workpapers/q1_pass_dc9_01/billing_calc.xlsx" in rel_paths
+    # Spot-check that workpapers entries actually appear
+    assert any(p.startswith("workpapers/") and p.endswith("/billing_calc.xlsx") for p in rel_paths)
+    assert any(p.startswith("tocs/") and p.endswith("_ref.xlsx") for p in rel_paths)
 
 
 def test_generate_gold_xlsx_stems_end_with_ref(tmp_path: Path) -> None:
@@ -316,7 +356,8 @@ def test_main_with_hash_manifest_flag_writes_baseline(tmp_path: Path) -> None:
     )
     assert rc == 0
     assert baseline.is_file()
-    assert len(baseline.read_text().splitlines()) == 20
+    # 20 TOCs + 10 billing-calc W/Ps (Task 12)
+    assert len(baseline.read_text().splitlines()) == 30
 
 
 def test_main_without_hash_manifest_flag_does_not_write_baseline(tmp_path: Path) -> None:

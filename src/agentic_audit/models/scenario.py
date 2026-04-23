@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal, TypeAlias
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Type aliases — kept at module level for reuse in Task 5 gold JSON schema.
 Quarter: TypeAlias = Literal["Q1", "Q3"]
@@ -112,6 +112,17 @@ class ScenarioSpec(BaseModel):
     exception_type: ExceptionType = "none"
     seed: int = Field(..., ge=0)
     workpapers: tuple[WorkpaperSpec, ...] = ()
+
+    @field_validator("workpapers", mode="before")
+    @classmethod
+    def _coerce_workpapers_list_to_tuple(cls, v: object) -> object:
+        """YAML ``safe_load`` returns list[dict] for sequence nodes; pydantic
+        strict mode rejects list where tuple is declared. Coerce list → tuple
+        at the validation boundary so manifest.yaml keeps its natural shape.
+        """
+        if isinstance(v, list):
+            return tuple(v)
+        return v
 
     @model_validator(mode="after")
     def _pattern_matches_control(self) -> ScenarioSpec:
