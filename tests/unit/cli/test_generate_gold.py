@@ -24,6 +24,7 @@ from agentic_audit.cli.generate_gold import (
     generate_gold,
     main,
     strip_workbook_metadata,
+    write_hash_manifest,
 )
 from agentic_audit.models import load_manifest
 
@@ -189,3 +190,77 @@ def test_main_returns_zero_on_success(tmp_path: Path, capsys: pytest.CaptureFixt
 def test_main_writes_forty_files(tmp_path: Path) -> None:
     main(["--manifest", str(_MANIFEST_PATH), "--output-dir", str(tmp_path)])
     assert len(list(tmp_path.iterdir())) == 40
+
+
+# ── --hash-manifest-path flag + write_hash_manifest helper ───────────
+
+
+def test_write_hash_manifest_produces_one_line_per_xlsx(tmp_path: Path) -> None:
+    generate_gold(_MANIFEST_PATH, tmp_path)
+    baseline = tmp_path / "corpus_hashes.txt"
+    count = write_hash_manifest(tmp_path, baseline)
+
+    assert count == 20
+    lines = baseline.read_text().splitlines()
+    assert len(lines) == 20
+
+
+def test_write_hash_manifest_lines_are_scenario_id_space_hash(tmp_path: Path) -> None:
+    generate_gold(_MANIFEST_PATH, tmp_path)
+    baseline = tmp_path / "corpus_hashes.txt"
+    write_hash_manifest(tmp_path, baseline)
+
+    for line in baseline.read_text().splitlines():
+        scenario_id, digest = line.split()
+        assert (tmp_path / f"{scenario_id}.xlsx").exists()
+        assert len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
+
+
+def test_write_hash_manifest_is_sorted_by_scenario_id(tmp_path: Path) -> None:
+    generate_gold(_MANIFEST_PATH, tmp_path)
+    baseline = tmp_path / "corpus_hashes.txt"
+    write_hash_manifest(tmp_path, baseline)
+
+    ids = [line.split()[0] for line in baseline.read_text().splitlines()]
+    assert ids == sorted(ids)
+
+
+def test_write_hash_manifest_creates_parent_dir(tmp_path: Path) -> None:
+    generate_gold(_MANIFEST_PATH, tmp_path)
+    nested = tmp_path / "deep" / "nested" / "corpus_hashes.txt"
+    write_hash_manifest(tmp_path, nested)
+    assert nested.is_file()
+
+
+def test_write_hash_manifest_is_deterministic(tmp_path: Path) -> None:
+    """Same corpus → same baseline, byte-for-byte."""
+    generate_gold(_MANIFEST_PATH, tmp_path)
+    a = tmp_path / "a.txt"
+    b = tmp_path / "b.txt"
+    write_hash_manifest(tmp_path, a)
+    write_hash_manifest(tmp_path, b)
+    assert a.read_bytes() == b.read_bytes()
+
+
+def test_main_with_hash_manifest_flag_writes_baseline(tmp_path: Path) -> None:
+    baseline = tmp_path / "corpus_hashes.txt"
+    rc = main(
+        [
+            "--manifest",
+            str(_MANIFEST_PATH),
+            "--output-dir",
+            str(tmp_path),
+            "--hash-manifest-path",
+            str(baseline),
+        ]
+    )
+    assert rc == 0
+    assert baseline.is_file()
+    assert len(baseline.read_text().splitlines()) == 20
+
+
+def test_main_without_hash_manifest_flag_does_not_write_baseline(tmp_path: Path) -> None:
+    """Flag is opt-in; default invocation produces no baseline file."""
+    baseline = tmp_path / "corpus_hashes.txt"
+    main(["--manifest", str(_MANIFEST_PATH), "--output-dir", str(tmp_path)])
+    assert not baseline.exists()

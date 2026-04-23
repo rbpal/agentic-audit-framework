@@ -29,7 +29,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from agentic_audit.generator import populate_workbook, render_toc_sheet
+from agentic_audit.generator import content_hash, populate_workbook, render_toc_sheet
 from agentic_audit.models import (
     build_gold_answer,
     gold_answer_to_json,
@@ -144,6 +144,20 @@ def generate_gold(manifest_path: Path, output_dir: Path) -> list[Path]:
     return sorted(written)
 
 
+def write_hash_manifest(xlsx_dir: Path, manifest_path: Path) -> int:
+    """Write ``<scenario_id> <content_hash>`` lines for every .xlsx in ``xlsx_dir``.
+
+    The file is the committed tripwire baseline — CI asserts the current
+    corpus still hashes to these values, catching unintended generator
+    drift across PRs.
+    """
+    xlsx_files = sorted(xlsx_dir.glob("*.xlsx"))
+    lines = [f"{p.stem} {content_hash(p)}\n" for p in xlsx_files]
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text("".join(lines))
+    return len(xlsx_files)
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry — ``poetry run generate-gold``."""
     parser = argparse.ArgumentParser(
@@ -162,6 +176,16 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Directory to write outputs (default: <repo>/eval/gold_scenarios)",
     )
+    parser.add_argument(
+        "--hash-manifest-path",
+        type=Path,
+        default=None,
+        help=(
+            "If set, also write <scenario_id> <content_hash> lines to this file "
+            "for use as a committed baseline. "
+            "(canonical: tests/fixtures/corpus_hashes.txt)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     repo_root = _default_repo_root()
@@ -170,6 +194,11 @@ def main(argv: list[str] | None = None) -> int:
 
     written = generate_gold(manifest_path, output_dir)
     print(f"Wrote {len(written)} files to {output_dir}")
+
+    if args.hash_manifest_path is not None:
+        count = write_hash_manifest(output_dir, args.hash_manifest_path)
+        print(f"Wrote {count} hash lines to {args.hash_manifest_path}")
+
     return 0
 
 

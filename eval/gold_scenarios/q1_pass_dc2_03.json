@@ -1,0 +1,13 @@
+{
+  "control_id": "DC-2",
+  "expected_exception_narrative_keywords": [],
+  "expected_final_verdict": "Effective",
+  "expected_outcome": "pass",
+  "expected_per_attribute_result": {
+    "DC-2.A": "pass",
+    "DC-2.B": "pass",
+    "DC-2.C": "pass",
+    "DC-2.D": "pass"
+  },
+  "scenario_id": "q1_pass_dc2_03"
+}

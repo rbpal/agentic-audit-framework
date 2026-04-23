@@ -1,0 +1,19 @@
+{
+  "control_id": "DC-9",
+  "expected_exception_narrative_keywords": [
+    "rate",
+    "change",
+    "amendment"
+  ],
+  "expected_final_verdict": "Not effective",
+  "expected_outcome": "exception",
+  "expected_per_attribute_result": {
+    "DC-9.A": "pass",
+    "DC-9.B": "pass",
+    "DC-9.C": "pass",
+    "DC-9.D": "fail",
+    "DC-9.E": "pass",
+    "DC-9.F": "pass"
+  },
+  "scenario_id": "q3_exception_dc9_rate_no_amendment_01"
+}
