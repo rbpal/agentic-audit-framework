@@ -11,6 +11,7 @@ data layout. v1's scenario-scoped writers in
 the final cutover commit on this branch.
 """
 
+from agentic_audit.generator.engagement_writers.dc2 import render_dc2_quarter
 from agentic_audit.generator.engagement_writers.dc9 import render_dc9_quarter
 
-__all__ = ["render_dc9_quarter"]
+__all__ = ["render_dc2_quarter", "render_dc9_quarter"]
