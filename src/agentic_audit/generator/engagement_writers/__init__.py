@@ -13,5 +13,6 @@ the final cutover commit on this branch.
 
 from agentic_audit.generator.engagement_writers.dc2 import render_dc2_quarter
 from agentic_audit.generator.engagement_writers.dc9 import render_dc9_quarter
+from agentic_audit.generator.engagement_writers.toc import render_engagement_toc
 
-__all__ = ["render_dc2_quarter", "render_dc9_quarter"]
+__all__ = ["render_dc2_quarter", "render_dc9_quarter", "render_engagement_toc"]
