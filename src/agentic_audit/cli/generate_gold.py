@@ -1,21 +1,23 @@
-"""CLI entrypoint ``generate-gold`` — regenerates the synthetic corpus.
+"""CLI entrypoint ``generate-gold`` — regenerates the v2 engagement corpus.
 
-Invoked via ``poetry run generate-gold``. Reads the scenario manifest,
-emits one ``.xlsx`` + one ``.json`` per scenario into the output
-directory. Clears any previously-written files first so stale scenarios
-cannot linger.
+Invoked via ``poetry run generate-gold``. Reads ``manifest.yaml`` as a
+v2 ``EngagementSpec`` (one engagement × 4 quarters × 2 controls), then
+writes 17 files to the corpus root:
+
+* 1 ``tocs/engagement_toc_ref.xlsx`` (TOC with DC-2 + DC-9 sheets)
+* 8 ``tocs/<control>_<quarter>.json`` gold answers
+* 8 ``workpapers/<control>_<quarter>_ref.xlsx`` per-quarter W/Ps
 
 Idempotency invariant: running the command twice produces byte-identical
-outputs. Two sources of non-determinism are neutralized here:
+outputs. Three sources of non-determinism are neutralized:
 
 1. openpyxl writes creator / timestamp docprops on every ``save()``
    → ``strip_workbook_metadata`` pins them to fixed values.
 2. Python's ``zipfile`` stamps each entry with the current wall clock
-   → ``_normalize_zip`` rewrites the archive with a fixed 1980-01-01
-   entry timestamp and a stable create-system marker.
-
-The resulting files hash-equal across runs, which is what Task 7's
-hash-determinism test relies on.
+   → ``_normalize_zip`` rewrites the archive with 1980-01-01 entry
+   timestamps and a stable create-system marker.
+3. openpyxl also overrides ``dcterms:modified`` in ``docProps/core.xml``
+   at save time → ``_normalize_zip`` patches it back to the fixed epoch.
 """
 
 from __future__ import annotations
@@ -26,37 +28,21 @@ import re
 import shutil
 import sys
 import zipfile
-from collections.abc import Callable
 from pathlib import Path
 
 from openpyxl import Workbook
 
-from agentic_audit.generator import content_hash, populate_workbook, render_toc_sheet
+from agentic_audit.generator import content_hash
 from agentic_audit.generator.engagement_writers import (
     render_dc2_quarter,
     render_dc9_quarter,
     render_engagement_toc,
-)
-from agentic_audit.generator.workpaper_writers import render_billing_calc
-from agentic_audit.models import (
-    ScenarioSpec,
-    WorkpaperSpec,
-    WorkpaperType,
-    build_gold_answer,
-    gold_answer_to_json,
-    load_manifest,
 )
 from agentic_audit.models.engagement import ControlId, EngagementSpec, Quarter, load_engagement
 from agentic_audit.models.engagement_gold_answer import (
     build_quarter_gold_answer,
     engagement_gold_answer_to_json,
 )
-
-# Dispatch table — maps declared WorkpaperType to its writer function.
-# Extended in Task 13 (governing-doc amendment) + Task 14 (variance workbook).
-_WORKPAPER_WRITERS: dict[WorkpaperType, Callable[[ScenarioSpec, WorkpaperSpec], Workbook]] = {
-    "billing_calculation": render_billing_calc,
-}
 
 _FIXED_EPOCH = dt.datetime(2000, 1, 1, 0, 0, 0)
 _ZIP_FIXED_DATE_TIME = (1980, 1, 1, 0, 0, 0)
@@ -138,90 +124,12 @@ def _clear_output_dir(output_dir: Path) -> None:
 
 
 def _clear_workpapers_dir(corpus_root: Path) -> None:
-    """Remove the entire ``workpapers/`` subtree.
-
-    All workpaper content is derived from ``ScenarioSpec.workpapers`` — a
-    scenario that no longer declares a W/P must leave no orphan file
-    behind. The whole tree is wiped and rebuilt from scratch.
+    """Remove the entire ``workpapers/`` subtree so orphans from a prior
+    run cannot linger. Rebuilt from the manifest on every invocation.
     """
     wp_root = corpus_root / "workpapers"
     if wp_root.is_dir():
         shutil.rmtree(wp_root)
-
-
-def _write_scenario_workpapers(corpus_root: Path, spec: ScenarioSpec) -> list[Path]:
-    """Emit every W/P declared by ``spec.workpapers`` under
-    ``corpus_root/workpapers/<scenario_id>/``.
-
-    Dispatches on ``wp.type`` against ``_WORKPAPER_WRITERS``. Raises
-    ``ValueError`` on an unknown type — forces Task 13+ to register
-    writers explicitly before manifest entries can reference them.
-    """
-    if not spec.workpapers:
-        return []
-
-    wp_dir = corpus_root / "workpapers" / spec.scenario_id
-    wp_dir.mkdir(parents=True, exist_ok=True)
-
-    written: list[Path] = []
-    for wp in spec.workpapers:
-        writer = _WORKPAPER_WRITERS.get(wp.type)
-        if writer is None:
-            raise ValueError(
-                f"No writer registered for workpaper type {wp.type!r} "
-                f"(scenario {spec.scenario_id}); add one to _WORKPAPER_WRITERS"
-            )
-        wb = writer(spec, wp)
-        wp_path = wp_dir / wp.filename
-        _save_deterministic(wb, wp_path)
-        written.append(wp_path)
-    return written
-
-
-def generate_gold(manifest_path: Path, corpus_root: Path) -> list[Path]:
-    """Regenerate the full corpus from ``manifest_path`` into ``corpus_root``.
-
-    Produces, per scenario:
-
-    * ``corpus_root/tocs/<scenario_id>_ref.xlsx`` — reference TOC
-    * ``corpus_root/tocs/<scenario_id>.json`` — gold-answer JSON
-    * ``corpus_root/workpapers/<scenario_id>/<filename>`` × N — supporting
-      workpapers, one per entry in ``spec.workpapers``
-
-    Clears ``tocs/`` and the entire ``workpapers/`` subtree before
-    writing so stale artefacts cannot linger. ``manifest.yaml`` and
-    sibling directories are untouched.
-
-    Returns the sorted list of every written path.
-    """
-    if not manifest_path.is_file():
-        raise FileNotFoundError(f"manifest not found: {manifest_path}")
-
-    tocs_dir = corpus_root / "tocs"
-    tocs_dir.mkdir(parents=True, exist_ok=True)
-    _clear_output_dir(tocs_dir)
-    _clear_workpapers_dir(corpus_root)
-
-    specs = load_manifest(manifest_path)
-    written: list[Path] = []
-
-    for spec in specs:
-        wb = populate_workbook(render_toc_sheet(spec), spec)
-        # _ref suffix on xlsx encodes provenance (reference TOC vs future
-        # agent-generated _gen.xlsx). JSON gold answers stay unadorned —
-        # they're a different artefact type (answer key, not a TOC).
-        xlsx_path = tocs_dir / f"{spec.scenario_id}_ref.xlsx"
-        _save_deterministic(wb, xlsx_path)
-        written.append(xlsx_path)
-
-        gold = build_gold_answer(spec)
-        json_path = tocs_dir / f"{spec.scenario_id}.json"
-        json_path.write_text(gold_answer_to_json(gold) + "\n")
-        written.append(json_path)
-
-        written.extend(_write_scenario_workpapers(corpus_root, spec))
-
-    return sorted(written)
 
 
 def generate_engagement_corpus(manifest_path: Path, corpus_root: Path) -> list[Path]:
@@ -234,8 +142,7 @@ def generate_engagement_corpus(manifest_path: Path, corpus_root: Path) -> list[P
     * ``workpapers/<control>_<quarter>_ref.xlsx``         × 8 W/Ps
 
     Clears ``tocs/`` and ``workpapers/`` before writing so stale artefacts
-    from v1 (scenario-scoped W/Ps, per-scenario TOCs) cannot linger.
-    ``manifest.yaml`` and ``manifest.v2.yaml`` are untouched.
+    from a prior run cannot linger. ``manifest.yaml`` is untouched.
 
     Returns the sorted list of every written path.
     """
@@ -310,7 +217,10 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry — ``poetry run generate-gold``."""
     parser = argparse.ArgumentParser(
         prog="generate-gold",
-        description="Regenerate the synthetic audit corpus (20 xlsx + 20 json).",
+        description=(
+            "Regenerate the v2 engagement corpus: 1 TOC + 8 gold JSONs + 8 W/Ps "
+            "= 17 files under the corpus root."
+        ),
     )
     parser.add_argument(
         "--manifest",
@@ -342,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     manifest_path = args.manifest or repo_root / "eval" / "gold_scenarios" / "manifest.yaml"
     corpus_root = args.output_dir or repo_root / "eval" / "gold_scenarios"
 
-    written = generate_gold(manifest_path, corpus_root)
+    written = generate_engagement_corpus(manifest_path, corpus_root)
     print(f"Wrote {len(written)} files to {corpus_root}")
 
     if args.hash_manifest_path is not None:

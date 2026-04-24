@@ -1,0 +1,19 @@
+{
+  "control_id": "DC-9",
+  "defect": "dc9_rate_change_without_amendment",
+  "expected_attribute_results": {
+    "DC-9.A": "pass",
+    "DC-9.B": "pass",
+    "DC-9.C": "pass",
+    "DC-9.D": "fail",
+    "DC-9.E": "pass",
+    "DC-9.F": "pass"
+  },
+  "expected_cross_file_contradiction": {
+    "description": "W/P amendment row reads 'NO AMENDMENT FILED' \u2014 TOC attribute D tickmark is X",
+    "toc_cell": "engagement TOC, DC-9 sheet, row 8 (attribute D), Q4 column",
+    "wp_cell": "dc9_Q4_ref.xlsx, row 16 (Supporting amendment)"
+  },
+  "expected_quarter_verdict": "Not effective",
+  "quarter": "Q4"
+}

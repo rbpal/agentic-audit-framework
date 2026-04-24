@@ -10,7 +10,7 @@ from agentic_audit.cli.generate_gold import generate_engagement_corpus
 from agentic_audit.models.engagement_gold_answer import load_engagement_gold_answer
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_V2_MANIFEST = _REPO_ROOT / "eval" / "gold_scenarios" / "manifest.v2.yaml"
+_V2_MANIFEST = _REPO_ROOT / "eval" / "gold_scenarios" / "manifest.yaml"
 
 
 # ── File count + layout ──────────────────────────────────────────────

@@ -1,215 +1,49 @@
-# SOX Audit — Synthetic Scenario Manifest
-# 20 curated scenarios covering DC-9 (signoff_with_tieout) and DC-2 (variance_detection).
-# Distribution: 10 pass + 10 exception · 10 DC-9 + 10 DC-2 · 10 Q1 + 10 Q3.
-# Step 1.5 (Task 12) — DC-9 scenarios now declare a billing_calculation W/P.
-# Schema version: 1.0 (bump on breaking changes).
-version: "1.0"
+# v2 Corpus — Engagement Manifest
+# One engagement × 4 quarters × 2 controls = 8 (control, quarter) entries.
+# Loaded by agentic_audit.models.engagement.load_engagement.
+# Replaces the v1 20-scenario manifest.yaml at the end of Step 2.
+#
+# Defect placement from privateDocs/step_02_corpus_v2.md §5:
+#   Q1: clean across both controls (baseline)
+#   Q2: DC-9 benign rate change WITH amendment; DC-2 clean
+#   Q3: DC-9 figure_mismatch (attr C); DC-2 variance_explanation_inadequate (attr C)
+#   Q4: DC-9 rate change WITHOUT amendment (attr D); DC-2 variance_no_explanation (attr B)
+#
+# Schema version: 2.0 (bump on breaking changes).
 
-scenarios:
-  # ── PASS cases (10) — seeds 42–51 ──────────────────────────────────
+engagement:
+  entity_name: Alpha Pension Fund
+  year: 2025
+  seed: 2025
+  quarters:
+    # ── Q1 — clean baseline ───────────────────────────────────────────
+    - control_id: DC-2
+      quarter: Q1
+      defect: none
+    - control_id: DC-9
+      quarter: Q1
+      defect: none
 
-  # DC-9 pass (5): 2 Q1, 3 Q3
-  - scenario_id: q1_pass_dc9_01
-    control_id: DC-9
-    pattern_type: signoff_with_tieout
-    quarter: Q1
-    expected_outcome: pass
-    exception_type: none
-    seed: 42
-    workpapers:
-      - type: billing_calculation
-        filename: billing_calc.xlsx
-        toc_reference_code: DC-5.7
+    # ── Q2 — DC-9 rate change, amendment on file (benign) ─────────────
+    - control_id: DC-2
+      quarter: Q2
+      defect: none
+    - control_id: DC-9
+      quarter: Q2
+      defect: dc9_rate_change_with_amendment
 
-  - scenario_id: q1_pass_dc9_02
-    control_id: DC-9
-    pattern_type: signoff_with_tieout
-    quarter: Q1
-    expected_outcome: pass
-    exception_type: none
-    seed: 43
-    workpapers:
-      - type: billing_calculation
-        filename: billing_calc.xlsx
-        toc_reference_code: DC-5.7
+    # ── Q3 — two simultaneous tie-out defects (both on attribute C) ───
+    - control_id: DC-2
+      quarter: Q3
+      defect: dc2_variance_explanation_inadequate
+    - control_id: DC-9
+      quarter: Q3
+      defect: dc9_figure_mismatch
 
-  - scenario_id: q3_pass_dc9_01
-    control_id: DC-9
-    pattern_type: signoff_with_tieout
-    quarter: Q3
-    expected_outcome: pass
-    exception_type: none
-    seed: 44
-    workpapers:
-      - type: billing_calculation
-        filename: billing_calc.xlsx
-        toc_reference_code: DC-5.7
-
-  - scenario_id: q3_pass_dc9_02
-    control_id: DC-9
-    pattern_type: signoff_with_tieout
-    quarter: Q3
-    expected_outcome: pass
-    exception_type: none
-    seed: 45
-    workpapers:
-      - type: billing_calculation
-        filename: billing_calc.xlsx
-        toc_reference_code: DC-5.7
-
-  - scenario_id: q3_pass_dc9_03
-    control_id: DC-9
-    pattern_type: signoff_with_tieout
-    quarter: Q3
-    expected_outcome: pass
-    exception_type: none
-    seed: 46
-    workpapers:
-      - type: billing_calculation
-        filename: billing_calc.xlsx
-        toc_reference_code: DC-5.7
-
-  # DC-2 pass (5): 3 Q1, 2 Q3
-  - scenario_id: q1_pass_dc2_01
-    control_id: DC-2
-    pattern_type: variance_detection
-    quarter: Q1
-    expected_outcome: pass
-    exception_type: none
-    seed: 47
-
-  - scenario_id: q1_pass_dc2_02
-    control_id: DC-2
-    pattern_type: variance_detection
-    quarter: Q1
-    expected_outcome: pass
-    exception_type: none
-    seed: 48
-
-  - scenario_id: q1_pass_dc2_03
-    control_id: DC-2
-    pattern_type: variance_detection
-    quarter: Q1
-    expected_outcome: pass
-    exception_type: none
-    seed: 49
-
-  - scenario_id: q3_pass_dc2_01
-    control_id: DC-2
-    pattern_type: variance_detection
-    quarter: Q3
-    expected_outcome: pass
-    exception_type: none
-    seed: 50
-
-  - scenario_id: q3_pass_dc2_02
-    control_id: DC-2
-    pattern_type: variance_detection
-    quarter: Q3
-    expected_outcome: pass
-    exception_type: none
-    seed: 51
-
-  # ── EXCEPTION cases (10) — seeds 52–61 ─────────────────────────────
-
-  # DC-9 exceptions (5)
-  - scenario_id: q1_exception_dc9_signoff_missing_01
-    control_id: DC-9
-    pattern_type: signoff_with_tieout
-    quarter: Q1
-    expected_outcome: exception
-    exception_type: signoff_missing
-    seed: 52
-    workpapers:
-      - type: billing_calculation
-        filename: billing_calc.xlsx
-        toc_reference_code: DC-5.7
-
-  - scenario_id: q3_exception_dc9_signoff_missing_02
-    control_id: DC-9
-    pattern_type: signoff_with_tieout
-    quarter: Q3
-    expected_outcome: exception
-    exception_type: signoff_missing
-    seed: 53
-    workpapers:
-      - type: billing_calculation
-        filename: billing_calc.xlsx
-        toc_reference_code: DC-5.7
-
-  - scenario_id: q1_exception_dc9_figure_mismatch_01
-    control_id: DC-9
-    pattern_type: signoff_with_tieout
-    quarter: Q1
-    expected_outcome: exception
-    exception_type: figure_mismatch
-    seed: 54
-    workpapers:
-      - type: billing_calculation
-        filename: billing_calc.xlsx
-        toc_reference_code: DC-5.7
-
-  - scenario_id: q3_exception_dc9_rate_no_amendment_01
-    control_id: DC-9
-    pattern_type: signoff_with_tieout
-    quarter: Q3
-    expected_outcome: exception
-    exception_type: billing_rate_change_without_amendment
-    seed: 55
-    workpapers:
-      - type: billing_calculation
-        filename: billing_calc.xlsx
-        toc_reference_code: DC-5.7
-
-  - scenario_id: q3_exception_dc9_boundary_01
-    control_id: DC-9
-    pattern_type: signoff_with_tieout
-    quarter: Q3
-    expected_outcome: exception
-    exception_type: boundary_edge_case
-    seed: 56
-    workpapers:
-      - type: billing_calculation
-        filename: billing_calc.xlsx
-        toc_reference_code: DC-5.7
-
-  # DC-2 exceptions (5)
-  - scenario_id: q1_exception_dc2_variance_no_explanation_01
-    control_id: DC-2
-    pattern_type: variance_detection
-    quarter: Q1
-    expected_outcome: exception
-    exception_type: variance_above_threshold_no_explanation
-    seed: 57
-
-  - scenario_id: q3_exception_dc2_variance_no_explanation_02
-    control_id: DC-2
-    pattern_type: variance_detection
-    quarter: Q3
-    expected_outcome: exception
-    exception_type: variance_above_threshold_no_explanation
-    seed: 58
-
-  - scenario_id: q1_exception_dc2_variance_inadequate_01
-    control_id: DC-2
-    pattern_type: variance_detection
-    quarter: Q1
-    expected_outcome: exception
-    exception_type: variance_explanation_inadequate
-    seed: 59
-
-  - scenario_id: q3_exception_dc2_variance_inadequate_02
-    control_id: DC-2
-    pattern_type: variance_detection
-    quarter: Q3
-    expected_outcome: exception
-    exception_type: variance_explanation_inadequate
-    seed: 60
-
-  - scenario_id: q1_exception_dc2_boundary_01
-    control_id: DC-2
-    pattern_type: variance_detection
-    quarter: Q1
-    expected_outcome: exception
-    exception_type: boundary_edge_case
-    seed: 61
+    # ── Q4 — missing evidence defects (DC-2 attr B, DC-9 attr D) ──────
+    - control_id: DC-2
+      quarter: Q4
+      defect: dc2_variance_no_explanation
+    - control_id: DC-9
+      quarter: Q4
+      defect: dc9_rate_change_without_amendment

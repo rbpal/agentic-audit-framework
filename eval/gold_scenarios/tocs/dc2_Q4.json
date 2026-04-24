@@ -1,0 +1,17 @@
+{
+  "control_id": "DC-2",
+  "defect": "dc2_variance_no_explanation",
+  "expected_attribute_results": {
+    "DC-2.A": "pass",
+    "DC-2.B": "fail",
+    "DC-2.C": "pass",
+    "DC-2.D": "pass"
+  },
+  "expected_cross_file_contradiction": {
+    "description": "above-threshold variance row has blank explanation; TOC attribute B tickmark is X",
+    "toc_cell": "engagement TOC, DC-2 sheet, row 6 (attribute B), Q4 column",
+    "wp_cell": "dc2_Q4_ref.xlsx, variance-table rows 10-14, Explanation column (7)"
+  },
+  "expected_quarter_verdict": "Not effective",
+  "quarter": "Q4"
+}
