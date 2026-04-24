@@ -32,6 +32,11 @@ from pathlib import Path
 from openpyxl import Workbook
 
 from agentic_audit.generator import content_hash, populate_workbook, render_toc_sheet
+from agentic_audit.generator.engagement_writers import (
+    render_dc2_quarter,
+    render_dc9_quarter,
+    render_engagement_toc,
+)
 from agentic_audit.generator.workpaper_writers import render_billing_calc
 from agentic_audit.models import (
     ScenarioSpec,
@@ -40,6 +45,11 @@ from agentic_audit.models import (
     build_gold_answer,
     gold_answer_to_json,
     load_manifest,
+)
+from agentic_audit.models.engagement import ControlId, EngagementSpec, Quarter, load_engagement
+from agentic_audit.models.engagement_gold_answer import (
+    build_quarter_gold_answer,
+    engagement_gold_answer_to_json,
 )
 
 # Dispatch table — maps declared WorkpaperType to its writer function.
@@ -212,6 +222,74 @@ def generate_gold(manifest_path: Path, corpus_root: Path) -> list[Path]:
         written.extend(_write_scenario_workpapers(corpus_root, spec))
 
     return sorted(written)
+
+
+def generate_engagement_corpus(manifest_path: Path, corpus_root: Path) -> list[Path]:
+    """v2 orchestrator — regenerate the engagement corpus (17 files).
+
+    Writes, under ``corpus_root``:
+
+    * ``tocs/engagement_toc_ref.xlsx``                     (1 file)
+    * ``tocs/<control>_<quarter>.json``                   × 8 gold answers
+    * ``workpapers/<control>_<quarter>_ref.xlsx``         × 8 W/Ps
+
+    Clears ``tocs/`` and ``workpapers/`` before writing so stale artefacts
+    from v1 (scenario-scoped W/Ps, per-scenario TOCs) cannot linger.
+    ``manifest.yaml`` and ``manifest.v2.yaml`` are untouched.
+
+    Returns the sorted list of every written path.
+    """
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"manifest not found: {manifest_path}")
+
+    tocs_dir = corpus_root / "tocs"
+    tocs_dir.mkdir(parents=True, exist_ok=True)
+    _clear_output_dir(tocs_dir)
+    _clear_workpapers_dir(corpus_root)
+    workpapers_dir = corpus_root / "workpapers"
+    workpapers_dir.mkdir(parents=True, exist_ok=True)
+
+    spec = load_engagement(manifest_path)
+    written: list[Path] = []
+
+    # ── Single engagement TOC (2 sheets: DC-2, DC-9) ───────────────
+    toc_wb = render_engagement_toc(spec)
+    toc_path = tocs_dir / "engagement_toc_ref.xlsx"
+    _save_deterministic(toc_wb, toc_path)
+    written.append(toc_path)
+
+    # ── 8 per-quarter W/Ps + 8 gold JSONs ──────────────────────────
+    controls: tuple[ControlId, ...] = ("DC-2", "DC-9")
+    quarters: tuple[Quarter, ...] = ("Q1", "Q2", "Q3", "Q4")
+    for control in controls:
+        for quarter in quarters:
+            # W/P
+            wb = _render_workpaper(spec, control, quarter)
+            wp_path = workpapers_dir / f"{_slug(control)}_{quarter}_ref.xlsx"
+            _save_deterministic(wb, wp_path)
+            written.append(wp_path)
+
+            # Gold JSON
+            answer = build_quarter_gold_answer(spec, control, quarter)
+            json_path = tocs_dir / f"{_slug(control)}_{quarter}.json"
+            json_path.write_text(engagement_gold_answer_to_json(answer) + "\n")
+            written.append(json_path)
+
+    return sorted(written)
+
+
+def _render_workpaper(spec: EngagementSpec, control_id: ControlId, quarter: Quarter) -> Workbook:
+    """Dispatch to the right v2 writer based on control_id."""
+    if control_id == "DC-2":
+        return render_dc2_quarter(spec, quarter)
+    if control_id == "DC-9":
+        return render_dc9_quarter(spec, quarter)
+    raise ValueError(f"No v2 writer for control_id={control_id!r}")
+
+
+def _slug(control_id: ControlId) -> str:
+    """``DC-2`` → ``dc2``, ``DC-9`` → ``dc9`` — file-system-safe slug."""
+    return control_id.replace("-", "").lower()
 
 
 def write_hash_manifest(corpus_root: Path, manifest_path: Path) -> int:
