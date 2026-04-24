@@ -159,6 +159,51 @@ def fake_billing_rate_usd(rng: random.Random) -> int:
     return rng.randint(50_000, 500_000)
 
 
+# ── Canonical billing computation (Task 13) ──────────────────────────
+#
+# Shared between the billing_calc W/P writer and the TOC populator so
+# both see the same "actual" numbers. The TOC's *claimed* figure may
+# intentionally differ from the W/P's actual figure — see
+# ``compute_toc_billing_claim`` — that's how ``figure_mismatch``
+# scenarios encode a cross-file disagreement the agent must detect.
+
+_BILLING_RATES: tuple[str, ...] = ("0.25%", "0.50%", "0.75%", "1.00%")
+
+
+def compute_canonical_billing(spec: ScenarioSpec) -> tuple[int, str, int]:
+    """Return ``(asset_value, rate_str, billing_fee)`` for this scenario.
+
+    Deterministic per ``spec.seed`` — same scenario always produces the
+    same triple. Billing calc writer reads this as its source of truth.
+    TOC populator reads this too (see ``compute_toc_billing_claim``).
+
+    The rng is namespaced with a fixed string so that adding or removing
+    billing fields doesn't perturb the TOC's unrelated rng draws.
+    """
+    rng = random.Random(f"{spec.seed}_billing")
+    asset_value = rng.randint(10_000_000, 500_000_000)
+    rate_str = rng.choice(_BILLING_RATES)
+    rate_decimal = float(rate_str.rstrip("%")) / 100.0
+    billing_fee = int(asset_value * rate_decimal)
+    return asset_value, rate_str, billing_fee
+
+
+def compute_toc_billing_claim(spec: ScenarioSpec) -> int:
+    """The billing fee the TOC *asserts* — may or may not match the W/P.
+
+    * pass and most exceptions → matches the billing calc fee exactly
+      (auditor correctly recorded what the supporting schedule showed).
+    * ``figure_mismatch`` → intentionally offset by +5 % (rounded to the
+      nearest thousand) so the TOC disagrees with the billing calc.
+      That disagreement is the contradiction the agent must detect.
+    """
+    _, _, canonical_fee = compute_canonical_billing(spec)
+    if spec.exception_type == "figure_mismatch":
+        offset = max(1_000, round(canonical_fee * 0.05 / 1_000) * 1_000)
+        return canonical_fee + offset
+    return canonical_fee
+
+
 # ── Outcome-aware providers ───────────────────────────────────────────
 
 

@@ -229,6 +229,19 @@ def _report_validation(rng: random.Random, spec: ScenarioSpec, cell: Cell) -> st
     return "Configurations validated per IT general-controls workpaper."
 
 
+def _toc_billing_fee_claim(rng: random.Random, spec: ScenarioSpec, cell: Cell) -> int:
+    """DC-9 only (Task 13) — the billing fee the TOC *asserts*.
+
+    For pass scenarios → equals the billing-calc W/P's canonical fee
+    (the TOC correctly records what the supporting schedule shows).
+
+    For ``figure_mismatch`` → intentionally offset from the canonical
+    fee, producing a cross-file contradiction the agent must detect.
+    """
+    del rng, cell
+    return fake_data.compute_toc_billing_claim(spec)
+
+
 _SIMPLE_DISPATCH: dict[str, Any] = {
     "workpaper_ref": _workpaper_ref,
     "scot_form_ref": _scot_form_ref,
@@ -259,4 +272,5 @@ _SIMPLE_DISPATCH: dict[str, Any] = {
     "deficiency_refs": _deficiency_refs,
     "tickmark": _tickmark,
     "control_name": _control_name,
+    "toc_billing_fee_claim": _toc_billing_fee_claim,
 }

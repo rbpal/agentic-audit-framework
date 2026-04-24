@@ -235,6 +235,25 @@ def _emit_sample_size(cursor: SheetCursor, spec: ScenarioSpec) -> None:
     cursor.advance(1)
 
 
+def _emit_billing_tieout(cursor: SheetCursor, spec: ScenarioSpec) -> None:
+    """DC-9 only — "Billing total per supporting schedule" row (Task 13).
+
+    Emits a single labelled row carrying the *claimed* billing total. For
+    pass scenarios the claim equals the billing-calc W/P's actual fee; for
+    ``figure_mismatch`` scenarios it diverges by ~5 % — that's the cross-file
+    contradiction the agent must detect.
+
+    Skipped for DC-2 (``variance_detection``) scenarios: they have no
+    billing concept to tie out.
+    """
+    if spec.pattern_type != "signoff_with_tieout":
+        return
+    cursor.advance(1)  # blank
+    cursor.write(2, "Billing total per supporting schedule DC-5.7 (USD)")
+    cursor.write(7, "<toc_billing_fee_claim>")
+    cursor.advance(2)  # trailing blank
+
+
 def _emit_testing_procedures(cursor: SheetCursor, spec: ScenarioSpec) -> None:
     """Testing procedures banner + column header + N attribute rows."""
     # Banner
@@ -361,6 +380,7 @@ def render_toc_sheet(spec: ScenarioSpec) -> Workbook:
     _emit_ipe(cursor, spec)
     _emit_multi_instance(cursor, spec)
     _emit_sample_size(cursor, spec)
+    _emit_billing_tieout(cursor, spec)  # DC-9 only — Task 13
     _emit_testing_procedures(cursor, spec)
     _emit_sample_grid(cursor, spec)
     _emit_tickmark_key(cursor, spec)
