@@ -1,0 +1,19 @@
+{
+  "control_id": "DC-9",
+  "defect": "dc9_figure_mismatch",
+  "expected_attribute_results": {
+    "DC-9.A": "pass",
+    "DC-9.B": "pass",
+    "DC-9.C": "fail",
+    "DC-9.D": "pass",
+    "DC-9.E": "pass",
+    "DC-9.F": "pass"
+  },
+  "expected_cross_file_contradiction": {
+    "description": "TOC billing-fee claim does not tie to DC-9 W/P billing calc",
+    "toc_cell": "engagement TOC, DC-9 sheet, row 12 (Billing fee per W/P), Q3 column",
+    "wp_cell": "dc9_Q3_ref.xlsx, row 10 (Billing fee USD)"
+  },
+  "expected_quarter_verdict": "Not effective",
+  "quarter": "Q3"
+}

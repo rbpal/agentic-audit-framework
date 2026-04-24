@@ -1,0 +1,17 @@
+{
+  "control_id": "DC-2",
+  "defect": "dc2_variance_explanation_inadequate",
+  "expected_attribute_results": {
+    "DC-2.A": "pass",
+    "DC-2.B": "pass",
+    "DC-2.C": "fail",
+    "DC-2.D": "pass"
+  },
+  "expected_cross_file_contradiction": {
+    "description": "above-threshold variance rows have explanations but 'Source tie' = No; TOC attribute C tickmark is X",
+    "toc_cell": "engagement TOC, DC-2 sheet, row 7 (attribute C), Q3 column",
+    "wp_cell": "dc2_Q3_ref.xlsx, variance-table rows 10-14, Source tie column (8)"
+  },
+  "expected_quarter_verdict": "Not effective",
+  "quarter": "Q3"
+}

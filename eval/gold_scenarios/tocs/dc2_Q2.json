@@ -1,0 +1,13 @@
+{
+  "control_id": "DC-2",
+  "defect": "none",
+  "expected_attribute_results": {
+    "DC-2.A": "pass",
+    "DC-2.B": "pass",
+    "DC-2.C": "pass",
+    "DC-2.D": "pass"
+  },
+  "expected_cross_file_contradiction": null,
+  "expected_quarter_verdict": "Effective",
+  "quarter": "Q2"
+}

@@ -1,39 +1,42 @@
-"""Typed domain models for the agentic audit framework."""
+"""Typed domain models for the agentic audit framework.
 
-from agentic_audit.models.gold_answer import (
-    AttributeResult,
-    FinalVerdict,
-    GoldAnswer,
-    build_gold_answer,
-    gold_answer_to_json,
-    load_gold_answer,
-)
-from agentic_audit.models.scenario import (
+v2 engagement schema (post Step 2 cutover). v1's per-scenario schema
+(``ScenarioSpec``, ``GoldAnswer``, ``WorkpaperSpec``) was removed in
+the cutover commit — history preserves it via git.
+"""
+
+from agentic_audit.models.engagement import (
     ControlId,
-    ExceptionType,
-    ExpectedOutcome,
-    PatternType,
+    EngagementSpec,
     Quarter,
-    ScenarioSpec,
-    WorkpaperSpec,
-    WorkpaperType,
-    load_manifest,
+    QuarterControlSpec,
+    QuarterDefect,
+    load_engagement,
+    quarter_control,
+)
+from agentic_audit.models.engagement_gold_answer import (
+    AttributeResult,
+    EngagementGoldAnswer,
+    FinalVerdict,
+    build_all_gold_answers,
+    build_quarter_gold_answer,
+    engagement_gold_answer_to_json,
+    load_engagement_gold_answer,
 )
 
 __all__ = [
     "AttributeResult",
     "ControlId",
-    "ExceptionType",
-    "ExpectedOutcome",
+    "EngagementGoldAnswer",
+    "EngagementSpec",
     "FinalVerdict",
-    "GoldAnswer",
-    "PatternType",
     "Quarter",
-    "ScenarioSpec",
-    "WorkpaperSpec",
-    "WorkpaperType",
-    "build_gold_answer",
-    "gold_answer_to_json",
-    "load_gold_answer",
-    "load_manifest",
+    "QuarterControlSpec",
+    "QuarterDefect",
+    "build_all_gold_answers",
+    "build_quarter_gold_answer",
+    "engagement_gold_answer_to_json",
+    "load_engagement",
+    "load_engagement_gold_answer",
+    "quarter_control",
 ]

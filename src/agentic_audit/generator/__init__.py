@@ -1,7 +1,10 @@
-"""Synthetic workbook generation for the agentic audit framework."""
+"""Synthetic workbook generation for the agentic audit framework.
+
+v2 (Step 2 cutover): engagement-level writers live in
+``agentic_audit.generator.engagement_writers``. The ``content_hash``
+helper is control-agnostic and stays at this level.
+"""
 
 from agentic_audit.generator.content_hash import content_hash
-from agentic_audit.generator.populate import populate_workbook
-from agentic_audit.generator.workbook_writer import SheetCursor, render_toc_sheet
 
-__all__ = ["SheetCursor", "content_hash", "populate_workbook", "render_toc_sheet"]
+__all__ = ["content_hash"]
