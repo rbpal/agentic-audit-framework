@@ -53,9 +53,11 @@ def test_baseline_file_exists() -> None:
     )
 
 
-def test_baseline_has_twenty_entries() -> None:
-    """Matches the 20 scenarios × 1 TOC today. Grows when workpapers land."""
-    assert len(_parse_baseline()) == 20
+def test_baseline_has_thirty_entries() -> None:
+    """20 TOCs + 10 billing_calculation W/Ps (one per DC-9 scenario; Task 12).
+    Grows again in Task 13 (governing-doc) + Task 14 (variance workbook).
+    """
+    assert len(_parse_baseline()) == 30
 
 
 def test_every_baseline_entry_matches_committed_xlsx() -> None:
@@ -100,14 +102,28 @@ def test_baseline_is_sorted_by_relative_path() -> None:
     assert paths == sorted(paths), "baseline must be sorted by relative path"
 
 
-def test_all_baseline_paths_are_under_tocs() -> None:
-    """Step 1.5 Task 10 invariant — only tocs/ entries exist today. When
-    workpapers/ lands in Task 12+, extend this assertion or split by prefix.
+def test_baseline_paths_live_under_tocs_or_workpapers() -> None:
+    """Every baseline entry must sit under ``tocs/`` or ``workpapers/``.
+
+    These are the two canonical subtrees in the corpus. A path with any
+    other prefix is a bug in the generator or a misplaced commit.
     """
     for rel_path in _parse_baseline():
-        assert rel_path.startswith("tocs/"), (
-            f"Unexpected baseline path {rel_path!r} — expected prefix 'tocs/'"
+        assert rel_path.startswith(("tocs/", "workpapers/")), (
+            f"Unexpected baseline path {rel_path!r} — expected 'tocs/' or 'workpapers/'"
         )
+
+
+def test_baseline_has_twenty_tocs() -> None:
+    toc_paths = [p for p in _parse_baseline() if p.startswith("tocs/")]
+    assert len(toc_paths) == 20
+
+
+def test_baseline_has_ten_billing_calcs() -> None:
+    """Task 12 — every DC-9 scenario (10 of them) declares a billing_calc."""
+    wp_paths = [p for p in _parse_baseline() if p.startswith("workpapers/")]
+    billing_calcs = [p for p in wp_paths if p.endswith("/billing_calc.xlsx")]
+    assert len(billing_calcs) == 10
 
 
 def test_all_tocs_carry_ref_suffix() -> None:
@@ -118,8 +134,20 @@ def test_all_tocs_carry_ref_suffix() -> None:
     ``_gen.xlsx`` outputs that will land under ``eval/agent_outputs/``.
     """
     for rel_path in _parse_baseline():
+        if not rel_path.startswith("tocs/"):
+            continue
         filename = rel_path.rsplit("/", 1)[-1]
         stem = filename.removesuffix(".xlsx")
         assert stem.endswith("_ref"), (
             f"{rel_path!r} does not carry the _ref suffix — Q7.15 violated"
         )
+
+
+def test_workpaper_paths_are_scenario_scoped() -> None:
+    """W/Ps live at ``workpapers/<scenario_id>/<filename>`` — three segments."""
+    for rel_path in _parse_baseline():
+        if not rel_path.startswith("workpapers/"):
+            continue
+        segments = rel_path.split("/")
+        assert len(segments) == 3, f"Unexpected W/P path depth: {rel_path!r}"
+        assert segments[0] == "workpapers"
