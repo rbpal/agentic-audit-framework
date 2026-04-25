@@ -22,10 +22,15 @@
 #   bash infra/bootstrap/remote_state_bootstrap.sh
 #
 # Optional environment overrides:
-#   LOCATION             (default: eastus2)
-#   SUFFIX               (default: derived from `whoami`)
-#   SOFT_DELETE_DAYS     (default: 14)
-#   WRITE_BACKEND_CONF   (default: 1; set to 0 to skip writing backend.conf)
+#   LOCATION                  (default: eastus2)
+#   SUFFIX                    (default: rbpal)
+#   SOFT_DELETE_DAYS          (default: 14)
+#   WRITE_BACKEND_CONF        (default: 1; set 0 to skip writing backend.conf)
+#   EXPECTED_SUBSCRIPTION_ID  (optional safety rail: if set, the script
+#                              aborts unless the active az subscription
+#                              matches. Prevents accidentally bootstrapping
+#                              state into the wrong tenant when juggling
+#                              multiple Azure logins.)
 #
 # Idempotent: re-running prints "...already exists, skipping create" for
 # each existing resource and exits 0 without touching them.
@@ -39,10 +44,11 @@ LOCATION="${LOCATION:-eastus2}"
 CONTAINER_NAME="tfstate"
 SOFT_DELETE_DAYS="${SOFT_DELETE_DAYS:-14}"
 
-# Default suffix: 1-6 lowercase alphanumeric chars derived from whoami.
-# Override via SUFFIX env var if it collides with another Azure account
-# or if you want a stable shared suffix across machines.
-DEFAULT_SUFFIX="$(whoami | tr -dc 'a-z0-9' | head -c 6)"
+# Stable suffix so the storage account name is reproducible across
+# machines and CI runs. Override via SUFFIX env var only if it collides
+# with another Azure tenant's existing storage account (Azure storage
+# account names are globally unique).
+DEFAULT_SUFFIX="rbpal"
 SUFFIX="${SUFFIX:-$DEFAULT_SUFFIX}"
 STORAGE_NAME="stagenticauditstate${SUFFIX}"
 
@@ -89,6 +95,21 @@ fi
 
 SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
 SUBSCRIPTION_NAME="$(az account show --query name -o tsv)"
+
+# Optional safety rail. If EXPECTED_SUBSCRIPTION_ID is set and doesn't
+# match the active subscription, abort before touching anything. Lets
+# the operator pin the run to a specific subscription without forcing
+# every contributor to hard-code one.
+if [[ -n "${EXPECTED_SUBSCRIPTION_ID:-}" ]]; then
+    if [[ "$SUBSCRIPTION_ID" != "$EXPECTED_SUBSCRIPTION_ID" ]]; then
+        log_err "Active subscription does not match EXPECTED_SUBSCRIPTION_ID."
+        log_err "  active:   $SUBSCRIPTION_NAME ($SUBSCRIPTION_ID)"
+        log_err "  expected: $EXPECTED_SUBSCRIPTION_ID"
+        log_err "Switch with: az account set --subscription $EXPECTED_SUBSCRIPTION_ID"
+        exit 1
+    fi
+    log_info "Subscription pin: matches EXPECTED_SUBSCRIPTION_ID ✓"
+fi
 
 log_info "Subscription:    $SUBSCRIPTION_NAME ($SUBSCRIPTION_ID)"
 log_info "Region:          $LOCATION"
