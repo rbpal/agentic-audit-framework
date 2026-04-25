@@ -17,10 +17,42 @@ variable "location" {
 variable "owner" {
   description = "Owner identifier (email or username) for resource tagging."
   type        = string
+  default     = "rbpal"
 }
 
 variable "extra_tags" {
   description = "Additional tags merged onto every resource via local.common_tags."
   type        = map(string)
   default     = {}
+}
+
+variable "name_suffix" {
+  description = "Stable identifier appended to globally-unique resource names (Azure DNS-scoped: AOAI custom subdomain, ADLS account, etc.). Mirrors the bootstrap script's SUFFIX."
+  type        = string
+  default     = "rbpal"
+
+  validation {
+    condition     = can(regex("^[a-z0-9]{2,12}$", var.name_suffix))
+    error_message = "name_suffix must be 2-12 chars, lowercase alphanumeric (Azure DNS rules)."
+  }
+}
+
+# ── Task 03: Azure OpenAI ────────────────────────────────────────────
+
+variable "openai_account_name" {
+  description = "Cognitive Services (Azure OpenAI) account name. RG-scoped uniqueness — does not need name_suffix appended."
+  type        = string
+  default     = "aoai-aaf-dev"
+}
+
+variable "openai_model_version" {
+  description = "GPT-4o version pin. Pinning deliberately prevents silent model drift across plan/apply cycles; bump in a separate PR to validate behaviour."
+  type        = string
+  default     = "2024-08-06"
+}
+
+variable "openai_model_capacity_tpm" {
+  description = "GPT-4o capacity in thousands of tokens-per-minute. 10 = 10K TPM. Subject to subscription quota; raise via portal request before bumping here."
+  type        = number
+  default     = 10
 }
