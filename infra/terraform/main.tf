@@ -64,3 +64,12 @@ module "adls" {
   account_name = "dlsaaf${var.name_suffix}${var.environment}"
   tags         = local.common_tags
 }
+
+module "databricks" {
+  source = "./modules/databricks"
+
+  resource_group_name = azurerm_resource_group.app.name
+  location            = azurerm_resource_group.app.location
+  workspace_name      = "dbw-aaf-${var.environment}"
+  tags                = local.common_tags
+}
