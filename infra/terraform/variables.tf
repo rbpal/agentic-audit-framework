@@ -48,7 +48,15 @@ variable "openai_account_name" {
 variable "openai_model_version" {
   description = "GPT-4o version pin. Pinning deliberately prevents silent model drift across plan/apply cycles; bump in a separate PR to validate behaviour."
   type        = string
-  default     = "2024-08-06"
+
+  # Bumped 2026-04-25: 2024-08-06 hit Azure's CREATION-deprecation
+  # threshold on 2026-03-31 (new deployments rejected with HTTP 400
+  # ServiceModelDeprecated) even though it still appeared in
+  # `az cognitiveservices model list` with INFERENCE deprecation
+  # 2026-10-01. Lesson: the model list reports inference (calls
+  # against existing deployments) availability, not creation (new
+  # deployments) availability — the two windows can diverge by months.
+  default = "2024-11-20"
 }
 
 variable "openai_model_capacity_tpm" {
