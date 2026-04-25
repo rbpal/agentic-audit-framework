@@ -26,6 +26,14 @@ resource "azurerm_cognitive_account" "this" {
     type = "SystemAssigned"
   }
 
+  # API-key auth disabled — forces every caller through Azure AD /
+  # managed-identity. Matches step_02_terraform_iac.md §3.5 ("no API
+  # keys at runtime"). Hardcoded rather than variable-controlled
+  # because we want this stance enforced at the module boundary —
+  # any change requires editing the module in a tracked PR, not
+  # flipping a tfvars value.
+  local_auth_enabled = false
+
   public_network_access_enabled = var.public_network_access_enabled
 
   tags = var.tags
@@ -34,6 +42,14 @@ resource "azurerm_cognitive_account" "this" {
 resource "azurerm_cognitive_deployment" "gpt4o" {
   name                 = var.deployment_name
   cognitive_account_id = azurerm_cognitive_account.this.id
+
+  # NoAutoUpgrade pins the model version genuinely. Azure's default
+  # ("OnceNewDefaultVersionAvailable") silently rolls the deployment
+  # to a new gpt-4o version when Microsoft promotes one as the new
+  # default — that breaks eval reproducibility because identical
+  # prompts can return different answers across plan/apply cycles.
+  # Bump var.model_version in a dedicated PR to upgrade deliberately.
+  version_upgrade_option = "NoAutoUpgrade"
 
   model {
     format  = "OpenAI"
