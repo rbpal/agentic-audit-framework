@@ -39,7 +39,17 @@ resource "azurerm_storage_account" "adls" {
   # Task 03's hardening cycle.
 
   blob_properties {
-    versioning_enabled = true
+    # NOTE: versioning_enabled is INTENTIONALLY omitted. Azure rejects
+    # `versioning_enabled = true` when `is_hns_enabled = true` —
+    # ADLS Gen2 and blob versioning are mutually exclusive features.
+    # Discovered at apply time on 2026-04-25 (HTTP error from the
+    # Azure storage API). For ADLS Gen2 protection, rely on:
+    #   - container_delete_retention_policy (below) for accidental delete
+    #   - delete_retention_policy (below) for accidental blob delete
+    #   - HNS itself (atomic directory ops; lower risk of accidental
+    #     bulk delete vs flat blob namespace)
+    # If point-in-time restore is needed later, look at change_feed +
+    # restore_policy (HNS-compatible).
 
     delete_retention_policy {
       days = var.soft_delete_days
