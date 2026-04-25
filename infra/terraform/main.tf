@@ -28,3 +28,28 @@ locals {
     var.extra_tags,
   )
 }
+
+# App resource group. Holds every Terraform-managed resource for this
+# environment. Created at the root (not inside any module) so a single
+# `terraform destroy` cleans up everything in one shot. The state RG
+# (rg-terraform-state) is bootstrap-managed and stays out of Terraform's
+# purview by design — see step_02_terraform_iac.md §6 for the rationale.
+resource "azurerm_resource_group" "app" {
+  name     = "rg-agentic-audit-framework-${var.environment}"
+  location = var.location
+  tags     = local.common_tags
+}
+
+# ── Modules ──────────────────────────────────────────────────────────
+
+module "openai" {
+  source = "./modules/openai"
+
+  resource_group_name   = azurerm_resource_group.app.name
+  location              = azurerm_resource_group.app.location
+  account_name          = var.openai_account_name
+  custom_subdomain_name = "aoai-aaf-${var.name_suffix}-${var.environment}"
+  model_version         = var.openai_model_version
+  model_capacity_tpm    = var.openai_model_capacity_tpm
+  tags                  = local.common_tags
+}
