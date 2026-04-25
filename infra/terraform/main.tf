@@ -73,3 +73,24 @@ module "databricks" {
   workspace_name      = "dbw-aaf-${var.environment}"
   tags                = local.common_tags
 }
+
+module "monitor" {
+  source = "./modules/monitor"
+
+  resource_group_name = azurerm_resource_group.app.name
+  location            = azurerm_resource_group.app.location
+  log_analytics_name  = "log-aaf-${var.environment}"
+  app_insights_name   = "appi-aaf-${var.environment}"
+  tags                = local.common_tags
+}
+
+module "keyvault" {
+  source = "./modules/keyvault"
+
+  resource_group_name = azurerm_resource_group.app.name
+  location            = azurerm_resource_group.app.location
+  # Key Vault names are globally unique — include name_suffix.
+  vault_name = "kv-aaf-${var.name_suffix}-${var.environment}"
+  tenant_id  = data.azurerm_client_config.current.tenant_id
+  tags       = local.common_tags
+}
