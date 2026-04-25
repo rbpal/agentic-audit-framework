@@ -53,3 +53,14 @@ module "openai" {
   model_capacity_tpm    = var.openai_model_capacity_tpm
   tags                  = local.common_tags
 }
+
+module "adls" {
+  source = "./modules/adls"
+
+  resource_group_name = azurerm_resource_group.app.name
+  location            = azurerm_resource_group.app.location
+  # Storage account names disallow hyphens — concatenated lowercase only.
+  # Pattern: dls (CAF abbreviation) + aaf (project) + suffix + env.
+  account_name = "dlsaaf${var.name_suffix}${var.environment}"
+  tags         = local.common_tags
+}
