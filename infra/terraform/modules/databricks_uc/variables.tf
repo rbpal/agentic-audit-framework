@@ -40,15 +40,25 @@ variable "environment_label" {
   type        = string
 }
 
+variable "catalog_storage_root" {
+  description = "Catalog-level managed_location. Required — the metastore has no default storage root, so Databricks rejects catalog creation without one. Convention: pass one of the external location URLs (typically bronze). Any schema whose managed_location is that same URL must omit storage_root and inherit; schemas with different URLs must NOT be sub-paths of this."
+  type        = string
+
+  validation {
+    condition     = can(regex("^abfss://[a-z0-9]+@[a-z0-9]+\\.dfs\\.core\\.windows\\.net/", var.catalog_storage_root))
+    error_message = "catalog_storage_root must be an abfss:// URL."
+  }
+}
+
 variable "schemas" {
-  description = "Map of schema name → {comment, storage_root}. Typically the three medallion tiers (bronze / silver / gold) each pointing at the matching external location URL. Each schema's storage_root determines where its managed tables physically land in ADLS."
+  description = "Map of schema name → {comment, storage_root}. storage_root is optional (use null for schemas that should inherit the catalog's managed_location). For schemas whose tier matches the catalog's managed_location URL, set storage_root = null and inherit; for schemas with their own tier path, set explicitly."
   type = map(object({
     comment      = string
-    storage_root = string
+    storage_root = optional(string)
   }))
 
   validation {
-    condition     = alltrue([for s in values(var.schemas) : can(regex("^abfss://[a-z0-9]+@[a-z0-9]+\\.dfs\\.core\\.windows\\.net/", s.storage_root))])
-    error_message = "Every schema's storage_root must be an abfss:// URL of the form abfss://<filesystem>@<account>.dfs.core.windows.net/<path>/"
+    condition     = alltrue([for s in values(var.schemas) : s.storage_root == null || can(regex("^abfss://[a-z0-9]+@[a-z0-9]+\\.dfs\\.core\\.windows\\.net/", s.storage_root))])
+    error_message = "Each schema's storage_root must be either null (inherit catalog's managed_location) or an abfss:// URL."
   }
 }
