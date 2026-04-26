@@ -63,6 +63,13 @@ resource "databricks_catalog" "this" {
   name    = var.catalog_name
   comment = "Audit catalog for the ${var.environment_label} environment. Created in step_03_task_05; lifecycle managed by Terraform."
 
+  # Required: metastore has no default storage root (see step_03_task_02
+  # discovery), so Databricks rejects catalog creation without a managed
+  # location. We pass one of the external location URLs (bronze) — the
+  # schema for that same tier inherits this rather than overriding,
+  # which keeps the medallion = filesystem 1-to-1 design intact.
+  storage_root = var.catalog_storage_root
+
   force_destroy = false
 
   depends_on = [

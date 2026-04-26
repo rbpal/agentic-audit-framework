@@ -152,10 +152,21 @@ module "databricks_uc" {
   catalog_name      = "audit_${var.environment}"
   environment_label = var.environment
 
+  # Catalog-level managed_location = bronze URL (required because the
+  # metastore has no default storage root). Schema bronze inherits this
+  # by leaving storage_root = null; silver / gold override with their
+  # own URLs. Result: managed tables in audit_dev.bronze land under
+  # bronze/, silver under silver/, gold under gold/ — medallion =
+  # filesystem 1-to-1 preserved.
+  catalog_storage_root = "abfss://bronze@${module.adls.account_name}.dfs.core.windows.net/"
+
   schemas = {
     "bronze" = {
-      comment      = "Raw landing — append-only; ingest writes here. Loose schema enforcement; SOX-evidence retention applies."
-      storage_root = "abfss://bronze@${module.adls.account_name}.dfs.core.windows.net/"
+      comment = "Raw landing — append-only; ingest writes here. Loose schema enforcement; SOX-evidence retention applies. Inherits catalog managed_location (bronze URL)."
+      # storage_root omitted on purpose — inherits catalog's URL,
+      # which IS the bronze URL. Setting it explicitly to the same
+      # URL would violate UC's "schema managed_location must not
+      # equal catalog's" rule.
     }
     "silver" = {
       comment      = "Cleaned + conformed entities — controls, attributes, evidence, validations. Strict schema; PII column masks attached."
