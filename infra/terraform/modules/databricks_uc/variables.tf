@@ -22,3 +22,33 @@ variable "external_locations" {
     error_message = "Every external_locations value must be an abfss:// URL of the form abfss://<filesystem>@<account>.dfs.core.windows.net/<path>/"
   }
 }
+
+# ── step_03_task_05 inputs ───────────────────────────────────────────
+
+variable "catalog_name" {
+  description = "Unity Catalog catalog name. Metastore-scoped; convention `audit_<env>` (audit_dev, audit_prod). The catalog is the permission boundary for the environment — one GRANT cascades to every schema and table inside."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-zA-Z][a-zA-Z0-9_]{1,254}$", var.catalog_name))
+    error_message = "catalog_name must start with a letter, be 2-255 chars, alphanumeric + underscores only (UC catalog naming rules)."
+  }
+}
+
+variable "environment_label" {
+  description = "Human-readable environment label used in resource comments (e.g., 'dev', 'prod'). Just for docstrings; doesn't influence resource naming."
+  type        = string
+}
+
+variable "schemas" {
+  description = "Map of schema name → {comment, storage_root}. Typically the three medallion tiers (bronze / silver / gold) each pointing at the matching external location URL. Each schema's storage_root determines where its managed tables physically land in ADLS."
+  type = map(object({
+    comment      = string
+    storage_root = string
+  }))
+
+  validation {
+    condition     = alltrue([for s in values(var.schemas) : can(regex("^abfss://[a-z0-9]+@[a-z0-9]+\\.dfs\\.core\\.windows\\.net/", s.storage_root))])
+    error_message = "Every schema's storage_root must be an abfss:// URL of the form abfss://<filesystem>@<account>.dfs.core.windows.net/<path>/"
+  }
+}

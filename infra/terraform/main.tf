@@ -148,6 +148,25 @@ module "databricks_uc" {
     "gold_${var.environment}"   = "abfss://gold@${module.adls.account_name}.dfs.core.windows.net/"
   }
 
+  # step_03_task_05: catalog + schemas
+  catalog_name      = "audit_${var.environment}"
+  environment_label = var.environment
+
+  schemas = {
+    "bronze" = {
+      comment      = "Raw landing — append-only; ingest writes here. Loose schema enforcement; SOX-evidence retention applies."
+      storage_root = "abfss://bronze@${module.adls.account_name}.dfs.core.windows.net/"
+    }
+    "silver" = {
+      comment      = "Cleaned + conformed entities — controls, attributes, evidence, validations. Strict schema; PII column masks attached."
+      storage_root = "abfss://silver@${module.adls.account_name}.dfs.core.windows.net/"
+    }
+    "gold" = {
+      comment      = "Curated for the agent + eval — claims, findings, telemetry. Heavy reads; partitioned for query performance."
+      storage_root = "abfss://gold@${module.adls.account_name}.dfs.core.windows.net/"
+    }
+  }
+
   depends_on = [
     azurerm_role_assignment.uc_access_connector_to_adls,
   ]
