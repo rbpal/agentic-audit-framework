@@ -123,3 +123,32 @@ resource "azurerm_role_assignment" "uc_access_connector_to_adls" {
   role_definition_name = "Storage Blob Data Contributor"
   principal_id         = module.databricks.access_connector_principal_id
 }
+
+# Unity Catalog storage credential + external locations for the
+# project's ADLS Gen2 account. Created in step_03_task_04.
+#
+# This module produces:
+#   * one databricks_storage_credential (federates UC → Access
+#     Connector MSI → ADLS, no storage account keys involved)
+#   * three databricks_external_location resources, one per medallion
+#     filesystem, named bronze_<env>, silver_<env>, gold_<env>
+#
+# depends_on the role assignment above is critical: external location
+# creation triggers a write-validation against ADLS, so the role grant
+# MUST be applied first or apply fails with AuthorizationPermissionMismatch.
+module "databricks_uc" {
+  source = "./modules/databricks_uc"
+
+  credential_name     = "aaf-${var.environment}-adls-cred"
+  access_connector_id = module.databricks.access_connector_id
+
+  external_locations = {
+    "bronze_${var.environment}" = "abfss://bronze@${module.adls.account_name}.dfs.core.windows.net/"
+    "silver_${var.environment}" = "abfss://silver@${module.adls.account_name}.dfs.core.windows.net/"
+    "gold_${var.environment}"   = "abfss://gold@${module.adls.account_name}.dfs.core.windows.net/"
+  }
+
+  depends_on = [
+    azurerm_role_assignment.uc_access_connector_to_adls,
+  ]
+}
