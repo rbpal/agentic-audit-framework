@@ -94,3 +94,32 @@ module "keyvault" {
   tenant_id  = data.azurerm_client_config.current.tenant_id
   tags       = local.common_tags
 }
+
+# ── Inter-module wiring ──────────────────────────────────────────────
+
+# Grant the Databricks Access Connector's system-assigned managed
+# identity Storage Blob Data Contributor on the ADLS account.
+#
+# This is what wires Unity Catalog through the Access Connector to our
+# ADLS storage. With this role:
+#   * Unity Catalog can create / read / write managed tables and volumes
+#     under any external location we register inside the ADLS account
+#   * Storage credential federation works without storage account keys
+#     (matches the project's "no API keys at runtime" stance from
+#     step_02_terraform_iac.md §3.5)
+#
+# Scoped to the ADLS account (not subscription, not RG) — narrowest
+# practical scope that still allows UC to manage every filesystem
+# (bronze / silver / gold) it'll need. Could scope further to specific
+# filesystems if we wanted per-tier credential separation, but that's
+# overkill for this project's blast radius.
+#
+# This role assignment is the operational kickoff for step_03_task_03 —
+# the metastore (Databricks-auto-created in step_03_task_02) gains the
+# ability to actually reach our ADLS via the Access Connector after this
+# applies.
+resource "azurerm_role_assignment" "uc_access_connector_to_adls" {
+  scope                = module.adls.account_id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = module.databricks.access_connector_principal_id
+}
