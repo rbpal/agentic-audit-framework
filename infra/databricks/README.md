@@ -1,12 +1,26 @@
 # Databricks / Unity Catalog design
 
-This directory will hold the Databricks-specific Terraform modules
-and configuration that build on Step 2's substrate (workspace,
-Access Connector, ADLS Gen2 with bronze/silver/gold filesystems).
+This directory holds the Databricks-specific configuration that
+builds on Step 2's substrate (workspace, Access Connector, ADLS Gen2
+with bronze/silver/gold filesystems).
 
 The catalog / schema / table topology is designed in
 `step_03_task_01` and provisioned across `step_03_task_02` through
 `step_03_task_09`.
+
+**Layout:**
+
+```text
+infra/databricks/
+├── README.md                                  ← this file
+├── notebooks/
+│   └── bronze_smoke_ingest.py                 ← step_03_task_09: workspace notebook
+└── sql/
+    └── verify_bronze_smoke.sql                ← step_03_task_09: lineage queries
+```
+
+Terraform-managed Unity Catalog objects (catalog, schemas, tables,
+external locations) live in `infra/terraform/modules/databricks_uc/`.
 
 ---
 
