@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from agentic_audit.models.engagement import ControlId, Quarter
+from agentic_audit.observability import traced_function
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -127,6 +128,7 @@ class BronzeReader:
     ) -> None:
         self._conn_factory = conn_factory
 
+    @traced_function("layer1.bronze_reader.read")
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=0.5, max=10),

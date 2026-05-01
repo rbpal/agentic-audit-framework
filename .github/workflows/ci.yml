@@ -86,7 +86,7 @@ jobs:
           restore-keys: |
             venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-
       - run: poetry install --no-interaction
-      - run: poetry run pytest --cov=src/agentic_audit --cov-report=xml
+      - run: poetry run pytest --cov=src/agentic_audit --cov-report=xml --cov-fail-under=90
 
       - name: Upload coverage report
         if: success() || failure()

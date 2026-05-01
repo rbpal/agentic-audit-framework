@@ -25,6 +25,7 @@ from agentic_audit.models.evidence import (
     AttributeCheck,
     AttributeId,
 )
+from agentic_audit.observability import traced_function
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -502,6 +503,7 @@ _DISPATCH: dict[tuple[ControlId, AttributeId], _CheckImpl] = {
 }
 
 
+@traced_function("layer1.check_attribute")
 def check_attribute(
     control_id: ControlId,
     attribute_id: AttributeId,
