@@ -69,6 +69,7 @@ class ExtractedEvidence(BaseModel):
     reviewer: SignOff
     attributes: list[AttributeCheck] = Field(min_length=4, max_length=6)
     source_bronze_file_hash: str = Field(min_length=1)
+    source_path: str = ""  # ADLS / volume path of the source workpaper
 
     @model_validator(mode="after")
     def attributes_match_control(self) -> ExtractedEvidence:

@@ -204,6 +204,7 @@ def extract(
         reviewer=reviewer,
         attributes=attributes,
         source_bronze_file_hash=rows[0].file_hash,
+        source_path=rows[0].source_path,
     )
 
 
