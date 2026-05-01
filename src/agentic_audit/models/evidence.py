@@ -14,13 +14,21 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal, TypeAlias
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from agentic_audit.models.engagement import ControlId, Quarter
 
-AttributeId: TypeAlias = Literal["A", "B", "C", "D"]
+AttributeId: TypeAlias = Literal["A", "B", "C", "D", "E", "F"]
 CheckStatus: TypeAlias = Literal["pass", "fail", "n/a"]
 SignOffRole: TypeAlias = Literal["preparer", "reviewer"]
+
+# Per-control attribute coverage. DC-2 carries 4 attributes (A-D),
+# DC-9 carries 6 attributes (A-F). Source of truth: the engagement TOC
+# files at eval/gold_scenarios/tocs/*.json.
+ATTRIBUTES_PER_CONTROL: dict[str, list[str]] = {
+    "DC-2": ["A", "B", "C", "D"],
+    "DC-9": ["A", "B", "C", "D", "E", "F"],
+}
 
 
 class SignOff(BaseModel):
@@ -45,8 +53,11 @@ class AttributeCheck(BaseModel):
 class ExtractedEvidence(BaseModel):
     """Layer 1 output for one (engagement, control, quarter) triple.
 
-    Carries exactly four `AttributeCheck` entries (A, B, C, D) and a
-    SHA256 hash of the source bronze file for lineage.
+    Carries one `AttributeCheck` per attribute the control defines:
+    - DC-2 → A, B, C, D (4 entries)
+    - DC-9 → A, B, C, D, E, F (6 entries)
+
+    Plus a SHA256 hash of the source bronze file for lineage.
     """
 
     engagement_id: str = Field(min_length=1)
@@ -56,29 +67,35 @@ class ExtractedEvidence(BaseModel):
     extraction_timestamp: datetime
     preparer: SignOff
     reviewer: SignOff
-    attributes: list[AttributeCheck] = Field(min_length=4, max_length=4)
+    attributes: list[AttributeCheck] = Field(min_length=4, max_length=6)
     source_bronze_file_hash: str = Field(min_length=1)
 
-    @field_validator("attributes")
-    @classmethod
-    def four_unique_attribute_ids(cls, v: list[AttributeCheck]) -> list[AttributeCheck]:
-        ids = sorted(a.attribute_id for a in v)
-        if ids != ["A", "B", "C", "D"]:
-            raise ValueError(f"attributes must cover A,B,C,D exactly; got {ids}")
-        return v
-
     @model_validator(mode="after")
-    def control_id_consistent(self) -> ExtractedEvidence:
+    def attributes_match_control(self) -> ExtractedEvidence:
+        """Cross-field validation:
+
+        1. Every nested ``AttributeCheck.control_id`` matches the parent.
+        2. The attribute IDs cover exactly what the control defines —
+           ``ATTRIBUTES_PER_CONTROL[control_id]`` — no gaps, no extras,
+           no duplicates.
+        """
         for a in self.attributes:
             if a.control_id != self.control_id:
                 raise ValueError(
                     f"attribute {a.attribute_id} has control_id={a.control_id} "
                     f"but ExtractedEvidence.control_id={self.control_id}"
                 )
+        expected = ATTRIBUTES_PER_CONTROL[self.control_id]
+        got = sorted(a.attribute_id for a in self.attributes)
+        if got != expected:
+            raise ValueError(
+                f"control_id={self.control_id} requires attributes {expected}; got {got}"
+            )
         return self
 
 
 __all__ = [
+    "ATTRIBUTES_PER_CONTROL",
     "AttributeCheck",
     "AttributeId",
     "CheckStatus",
