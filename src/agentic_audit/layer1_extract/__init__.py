@@ -8,16 +8,20 @@ No LLM, no randomness, no network beyond Databricks SQL. Same bronze
 rows in → exactly the same silver output every time.
 """
 
+from agentic_audit.layer1_extract.attribute_checks import check_attribute
 from agentic_audit.layer1_extract.bronze_reader import (
     BronzeReader,
     BronzeWorkpaperRow,
     ExtractionError,
     parse_control_quarter_from_path,
 )
+from agentic_audit.layer1_extract.orchestrator import extract
 
 __all__ = [
     "BronzeReader",
     "BronzeWorkpaperRow",
     "ExtractionError",
+    "check_attribute",
+    "extract",
     "parse_control_quarter_from_path",
 ]
