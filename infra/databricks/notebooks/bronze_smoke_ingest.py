@@ -29,7 +29,9 @@
 # COMMAND ----------
 
 # MAGIC %pip install openpyxl
-# dbutils.library.restartPython()  # uncomment on first run after a new cluster
+# Restart Python so the freshly installed package is importable. Idempotent
+# on warm warehouses (fast no-op when the runtime is already initialized).
+dbutils.library.restartPython()
 
 # COMMAND ----------
 
@@ -39,7 +41,7 @@ import os
 # attached to the cluster or via `%pip install -e <repo-root>`. Adjust the
 # path below to the repo checkout location on the cluster.
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pyspark.sql import Row
@@ -57,7 +59,7 @@ from agentic_audit.ingest.bronze_smoke import (
 CORPUS_ROOT = Path(os.environ.get("CORPUS_ROOT", "/Volumes/audit_dev/bronze/raw_pdfs/corpus/v2"))
 ENGAGEMENT_ID = "alpha-pension-fund-2025"
 INGESTED_BY = os.environ.get("USER", "smoke-ingest")
-INGESTED_AT = datetime.now(UTC)
+INGESTED_AT = datetime.now(timezone.utc)
 
 print(f"corpus_root  = {CORPUS_ROOT}")
 print(f"engagement   = {ENGAGEMENT_ID}")
