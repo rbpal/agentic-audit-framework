@@ -23,16 +23,30 @@ from agentic_audit.models.engagement_gold_answer import (
     engagement_gold_answer_to_json,
     load_engagement_gold_answer,
 )
+from agentic_audit.models.evidence import (
+    AttributeCheck,
+    AttributeId,
+    CheckStatus,
+    ExtractedEvidence,
+    SignOff,
+    SignOffRole,
+)
 
 __all__ = [
+    "AttributeCheck",
+    "AttributeId",
     "AttributeResult",
+    "CheckStatus",
     "ControlId",
     "EngagementGoldAnswer",
     "EngagementSpec",
+    "ExtractedEvidence",
     "FinalVerdict",
     "Quarter",
     "QuarterControlSpec",
     "QuarterDefect",
+    "SignOff",
+    "SignOffRole",
     "build_all_gold_answers",
     "build_quarter_gold_answer",
     "engagement_gold_answer_to_json",
