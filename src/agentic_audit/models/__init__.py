@@ -24,6 +24,7 @@ from agentic_audit.models.engagement_gold_answer import (
     load_engagement_gold_answer,
 )
 from agentic_audit.models.evidence import (
+    ATTRIBUTES_PER_CONTROL,
     AttributeCheck,
     AttributeId,
     CheckStatus,
@@ -33,6 +34,7 @@ from agentic_audit.models.evidence import (
 )
 
 __all__ = [
+    "ATTRIBUTES_PER_CONTROL",
     "AttributeCheck",
     "AttributeId",
     "AttributeResult",
