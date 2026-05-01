@@ -30,6 +30,7 @@ Scope notes for `task_04`:
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -61,24 +62,98 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+_SIGNOFF_RE = re.compile(r"^(?P<initials>[A-Z]{2,4})\s*[—-]\s*(?P<date>\d{4}-\d{2}-\d{2})\s*$")
+
+
+def _parse_signoff_cell(value: str | None) -> tuple[str, datetime] | None:
+    """Parse '<INITIALS> — <YYYY-MM-DD>' → (initials, tz-aware UTC datetime).
+    Returns None if the cell is None or doesn't match."""
+    if value is None:
+        return None
+    m = _SIGNOFF_RE.match(value.strip())
+    if not m:
+        return None
+    initials = m.group("initials")
+    try:
+        date = datetime.fromisoformat(m.group("date")).replace(tzinfo=UTC)
+    except ValueError:
+        return None
+    return initials, date
+
+
 def _extract_signoffs(
     rows: list[BronzeWorkpaperRow],
 ) -> tuple[SignOff, SignOff]:
-    """Build placeholder preparer / reviewer SignOff objects.
+    """Parse preparer / reviewer SignOff from the workpaper.
 
-    Real preparer / reviewer cell parsing (reading the workpaper
-    Checklist tab rows for initials, role, sign-off date) lands in
-    `step_04_task_03`. For the orchestrator wiring + tests, derive
-    deterministic placeholder values from the bronze metadata.
+    DC-9 layout: r4 col_01 = preparer, r5 col_01 = reviewer.
+    DC-2 layout: r17 col_01 = reviewer; no preparer cell — synthesise
+    a placeholder preparer from the ingest metadata. See
+    ``step_04_layer1_extraction.md`` § task_03.1 for the design wart
+    note.
 
     Caller (`extract`) guarantees `rows` is non-empty — no defensive
     guard here.
     """
-    signoff_date = rows[0].ingested_at
-    return (
-        SignOff(initials="P1", role="preparer", date=signoff_date),
-        SignOff(initials="R1", role="reviewer", date=signoff_date),
+    control_id = rows[0].control_id
+    ingest_date = rows[0].ingested_at
+
+    if control_id == "DC-9":
+        preparer = _signoff_from_dc9_row(
+            rows, row_index=4, role="preparer", fallback_date=ingest_date
+        )
+        reviewer = _signoff_from_dc9_row(
+            rows, row_index=5, role="reviewer", fallback_date=ingest_date
+        )
+        return preparer, reviewer
+
+    # DC-2: no preparer cell in the workpaper → synthesise.
+    reviewer = _signoff_from_dc2_row(rows, row_index=17, fallback_date=ingest_date)
+    preparer = SignOff(initials="AU", role="preparer", date=ingest_date)
+    return preparer, reviewer
+
+
+def _signoff_from_dc9_row(
+    rows: list[BronzeWorkpaperRow],
+    *,
+    row_index: int,
+    role: str,
+    fallback_date: datetime,
+) -> SignOff:
+    raw = next(
+        (
+            r.raw_data.get("col_01")
+            for r in rows
+            if r.sheet_name == "DC-9 Billing" and r.row_index == row_index
+        ),
+        None,
     )
+    parsed = _parse_signoff_cell(raw)
+    if parsed is None:
+        return SignOff(initials="??", role=role, date=fallback_date)  # type: ignore[arg-type]
+    initials, date = parsed
+    return SignOff(initials=initials, role=role, date=date)  # type: ignore[arg-type]
+
+
+def _signoff_from_dc2_row(
+    rows: list[BronzeWorkpaperRow],
+    *,
+    row_index: int,
+    fallback_date: datetime,
+) -> SignOff:
+    raw = next(
+        (
+            r.raw_data.get("col_01")
+            for r in rows
+            if r.sheet_name == "DC-2 Variance" and r.row_index == row_index
+        ),
+        None,
+    )
+    parsed = _parse_signoff_cell(raw)
+    if parsed is None:
+        return SignOff(initials="??", role="reviewer", date=fallback_date)
+    initials, date = parsed
+    return SignOff(initials=initials, role="reviewer", date=date)
 
 
 def extract(
