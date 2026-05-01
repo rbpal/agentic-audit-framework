@@ -68,8 +68,13 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101"]  # allow `assert` in tests
-# Databricks notebooks: `spark`, `display`, `dbutils` are runtime-injected globals.
-"infra/databricks/notebooks/*.py" = ["F821"]
+# Databricks notebooks:
+#   F821  — `spark`, `display`, `dbutils` are runtime-injected globals.
+#   UP017 — Serverless Starter Warehouse runs Python 3.10; `datetime.UTC`
+#           (added in 3.11) breaks at import. Keep `timezone.utc`.
+#   E402  — Notebooks legitimately interleave %pip install → restartPython()
+#           → imports across cells; ruff sees code-before-import.
+"infra/databricks/notebooks/*.py" = ["F821", "UP017", "E402"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["agentic_audit"]
