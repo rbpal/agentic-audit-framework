@@ -37,6 +37,7 @@ from agentic_audit.models.evidence import (
     AttributeCheck,
     ExtractedEvidence,
 )
+from agentic_audit.observability import traced_function
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -149,6 +150,7 @@ class SilverWriter:
             for check in record.attributes
         ]
 
+    @traced_function("layer1.silver_writer.write_evidence")
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=0.5, max=10),

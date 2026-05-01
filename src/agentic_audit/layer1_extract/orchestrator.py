@@ -47,6 +47,7 @@ from agentic_audit.models.evidence import (
     ExtractedEvidence,
     SignOff,
 )
+from agentic_audit.observability import traced_function
 
 if TYPE_CHECKING:
     from agentic_audit.layer1_extract.bronze_reader import BronzeWorkpaperRow
@@ -156,6 +157,7 @@ def _signoff_from_dc2_row(
     return SignOff(initials=initials, role="reviewer", date=date)
 
 
+@traced_function("layer1.extract")
 def extract(
     engagement_id: str,
     control_id: ControlId,
