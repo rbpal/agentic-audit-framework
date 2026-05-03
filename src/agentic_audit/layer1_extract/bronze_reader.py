@@ -70,9 +70,21 @@ def parse_control_quarter_from_path(source_path: str) -> tuple[ControlId, Quarte
 
 class BronzeWorkpaperRow(BaseModel):
     """One row from `audit_dev.bronze.workpapers_raw`, augmented with
-    `control_id` and `quarter` parsed from `source_path`."""
+    `control_id` and `quarter` parsed from `source_path`.
 
-    ingestion_id: int
+    ``ingestion_id`` is ``Optional[int]`` because the bronze table's
+    Terraform definition declares the column as a plain nullable
+    ``bigint`` (the comment "Auto-incremented per ingestion event" was
+    aspirational — the column is NOT
+    ``GENERATED ALWAYS AS IDENTITY`` and the smoke ingest does not
+    populate it explicitly). The model reflects what bronze actually
+    carries, not what we wished it carried. Downstream consumers
+    (attribute_checks, orchestrator) do not read ``ingestion_id`` —
+    only ``sheet_name``, ``row_index`` and ``raw_data`` matter for
+    extraction.
+    """
+
+    ingestion_id: int | None = None
     source_path: str
     file_hash: str
     engagement_id: str
@@ -183,7 +195,7 @@ class BronzeReader:
         )
         control_id, quarter = parse_control_quarter_from_path(source_path)
         return BronzeWorkpaperRow(
-            ingestion_id=int(ingestion_id),
+            ingestion_id=int(ingestion_id) if ingestion_id is not None else None,
             source_path=source_path,
             file_hash=file_hash,
             engagement_id=engagement_id,
