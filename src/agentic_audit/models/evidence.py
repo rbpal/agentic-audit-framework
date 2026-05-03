@@ -30,6 +30,23 @@ ATTRIBUTES_PER_CONTROL: dict[str, list[str]] = {
     "DC-9": ["A", "B", "C", "D", "E", "F"],
 }
 
+# Layer 2 (deterministic-grounded narrative) covers attributes that are
+# mechanical pass/fail checks. Layer 3 (React loop) covers attributes
+# that require qualitative reasoning over a "human had to justify an
+# anomaly" artefact (variance explanation, rate-change amendment).
+# Asymmetric reservation derived from per-attribute reasoning surface,
+# not the letter D — see Decision 2 in
+# privateDocs/step_05_layer2_narrative.md.
+NARRATABLE_ATTRIBUTES_PER_CONTROL: dict[str, list[str]] = {
+    "DC-2": ["A", "C", "D"],  # B reserved for Layer 3
+    "DC-9": ["A", "B", "C", "E", "F"],  # D reserved for Layer 3
+}
+
+LAYER3_ATTRIBUTES_PER_CONTROL: dict[str, list[str]] = {
+    "DC-2": ["B"],
+    "DC-9": ["D"],
+}
+
 
 class SignOff(BaseModel):
     """Auditor sign-off — preparer or reviewer."""
@@ -97,6 +114,8 @@ class ExtractedEvidence(BaseModel):
 
 __all__ = [
     "ATTRIBUTES_PER_CONTROL",
+    "LAYER3_ATTRIBUTES_PER_CONTROL",
+    "NARRATABLE_ATTRIBUTES_PER_CONTROL",
     "AttributeCheck",
     "AttributeId",
     "CheckStatus",
