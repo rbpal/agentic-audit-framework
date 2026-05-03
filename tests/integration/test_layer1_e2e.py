@@ -112,6 +112,25 @@ def _silver_count_for(conn_factory, control_id: str, quarter: str) -> int:
         return int(cur.fetchall()[0][0])
 
 
+def _silver_envelope_for(conn_factory, control_id: str, quarter: str) -> list[tuple]:
+    """Fetch the (run_id, preparer_initials, reviewer_initials) envelope of
+    each silver row matching the (engagement, control, quarter). Used to
+    assert step_05_task_02a's envelope columns are populated.
+    """
+    with conn_factory() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT run_id, preparer_initials, reviewer_initials
+            FROM audit_dev.silver.evidence
+            WHERE engagement_id = %(eng)s
+              AND control_id    = %(ctrl)s
+              AND quarter       = %(q)s
+            """,
+            {"eng": TEST_ENGAGEMENT, "ctrl": control_id, "q": quarter},
+        )
+        return [(r[0], r[1], r[2]) for r in cur.fetchall()]
+
+
 def test_dc9_q1_round_trip_writes_six_rows_idempotent(conn_factory) -> None:
     bronze_reader = BronzeReader(conn_factory)
     silver_writer = SilverWriter(conn_factory)
@@ -126,6 +145,15 @@ def test_dc9_q1_round_trip_writes_six_rows_idempotent(conn_factory) -> None:
     silver_writer.write_evidence(record)
     assert _silver_count_for(conn_factory, "DC-9", "Q1") == 6
 
+    # Envelope columns populated (step_05_task_02a) — every row carries
+    # the same run_id and preparer/reviewer initials from the parent record.
+    envelopes = _silver_envelope_for(conn_factory, "DC-9", "Q1")
+    assert len(envelopes) == 6
+    run_ids = {e[0] for e in envelopes}
+    assert len(run_ids) == 1 and next(iter(run_ids)) == record.run_id
+    assert all(e[1] == record.preparer.initials for e in envelopes)
+    assert all(e[2] == record.reviewer.initials for e in envelopes)
+
 
 def test_dc2_q1_round_trip_writes_four_rows(conn_factory) -> None:
     bronze_reader = BronzeReader(conn_factory)
@@ -139,3 +167,10 @@ def test_dc2_q1_round_trip_writes_four_rows(conn_factory) -> None:
 
     silver_writer.write_evidence(record)  # idempotent
     assert _silver_count_for(conn_factory, "DC-2", "Q1") == 4
+
+    # Envelope columns populated (step_05_task_02a)
+    envelopes = _silver_envelope_for(conn_factory, "DC-2", "Q1")
+    assert len(envelopes) == 4
+    assert all(e[0] == record.run_id for e in envelopes)
+    assert all(e[1] == record.preparer.initials for e in envelopes)
+    assert all(e[2] == record.reviewer.initials for e in envelopes)

@@ -46,7 +46,14 @@ if TYPE_CHECKING:
 
 class SilverEvidenceRow(BaseModel):
     """One row in `audit_dev.silver.evidence`. The pydantic guarantees
-    every row has a stable shape before it hits the warehouse."""
+    every row has a stable shape before it hits the warehouse.
+
+    The trailing `run_id` + `preparer_*` + `reviewer_*` fields are the
+    envelope columns added in step_05_task_02a so silver carries the
+    full `ExtractedEvidence` shape. They are required at write time
+    (Layer 1 always knows them) but the underlying Delta columns are
+    nullable to tolerate rows ingested before the migration.
+    """
 
     evidence_id: int
     engagement_id: str
@@ -58,6 +65,14 @@ class SilverEvidenceRow(BaseModel):
     evidence_type: str
     narrative: str
     ingested_at: datetime
+    # ---- Envelope columns (step_05_task_02a) ------------------------------
+    run_id: str
+    preparer_initials: str
+    preparer_role: str
+    preparer_date: datetime
+    reviewer_initials: str
+    reviewer_role: str
+    reviewer_date: datetime
 
 
 def _evidence_id(engagement_id: str, control_id: str, attribute_id: str, quarter: str) -> int:
@@ -94,7 +109,9 @@ SELECT * FROM (
     VALUES {values_clause}
 ) AS s (
     evidence_id, engagement_id, control_id, attribute_id, quarter,
-    source_path, source_file_hash, evidence_type, narrative, ingested_at
+    source_path, source_file_hash, evidence_type, narrative, ingested_at,
+    run_id, preparer_initials, preparer_role, preparer_date,
+    reviewer_initials, reviewer_role, reviewer_date
 )
 """
 
@@ -128,7 +145,14 @@ class SilverWriter:
     def _explode_to_silver_rows(
         record: ExtractedEvidence,
     ) -> list[SilverEvidenceRow]:
-        """One silver row per AttributeCheck. 4 rows for DC-2, 6 for DC-9."""
+        """One silver row per AttributeCheck. 4 rows for DC-2, 6 for DC-9.
+
+        Every row inherits the same envelope (run_id + preparer + reviewer)
+        from the parent ExtractedEvidence. The redundancy is intentional —
+        silver is queried at the (engagement, control, attribute, quarter)
+        grain and downstream readers reconstruct ExtractedEvidence from any
+        single row's envelope columns.
+        """
         return [
             SilverEvidenceRow(
                 evidence_id=_evidence_id(
@@ -146,6 +170,14 @@ class SilverWriter:
                 evidence_type="workpaper-row",
                 narrative=_attribute_check_to_narrative(check),
                 ingested_at=record.extraction_timestamp,
+                # ---- Envelope (step_05_task_02a) --------------------------
+                run_id=record.run_id,
+                preparer_initials=record.preparer.initials,
+                preparer_role=record.preparer.role,
+                preparer_date=record.preparer.date,
+                reviewer_initials=record.reviewer.initials,
+                reviewer_role=record.reviewer.role,
+                reviewer_date=record.reviewer.date,
             )
             for check in record.attributes
         ]
@@ -174,7 +206,9 @@ class SilverWriter:
         """Build the `VALUES (...), (...)` clause for the staged view.
 
         Returns a (params dict, values clause) pair. Each row contributes
-        10 named parameters keyed `r{i}_{column}` to avoid collisions.
+        17 named parameters keyed `r{i}_{column}` to avoid collisions —
+        10 original silver columns plus 7 envelope columns added in
+        step_05_task_02a.
         """
         params: dict[str, Any] = {}
         row_clauses: list[str] = []
@@ -192,6 +226,13 @@ class SilverWriter:
                     "evidence_type",
                     "narrative",
                     "ingested_at",
+                    "run_id",
+                    "preparer_initials",
+                    "preparer_role",
+                    "preparer_date",
+                    "reviewer_initials",
+                    "reviewer_role",
+                    "reviewer_date",
                 )
             )
             row_clauses.append(f"({placeholders})")
@@ -207,6 +248,13 @@ class SilverWriter:
                     f"evidence_type_{i}": r.evidence_type,
                     f"narrative_{i}": r.narrative,
                     f"ingested_at_{i}": r.ingested_at,
+                    f"run_id_{i}": r.run_id,
+                    f"preparer_initials_{i}": r.preparer_initials,
+                    f"preparer_role_{i}": r.preparer_role,
+                    f"preparer_date_{i}": r.preparer_date,
+                    f"reviewer_initials_{i}": r.reviewer_initials,
+                    f"reviewer_role_{i}": r.reviewer_role,
+                    f"reviewer_date_{i}": r.reviewer_date,
                 }
             )
         return params, ", ".join(row_clauses)
