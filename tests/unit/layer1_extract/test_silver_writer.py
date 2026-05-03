@@ -290,45 +290,56 @@ def conn_factory_factory(captured_calls):
     return build
 
 
-def test_write_evidence_dc9_executes_staged_view_and_merge(
+def test_write_evidence_dc9_executes_single_merge_statement(
     conn_factory_factory, captured_calls
 ) -> None:
+    """One MERGE statement carries both the per-row VALUES (via params)
+    and the upsert. The previous CREATE VIEW + MERGE pair was split out
+    because Databricks SQL forbids parameter markers in DDL — see
+    fix_silver_writer_inline_merge_no_view.
+    """
     record = _make_record(control_id="DC-9")
     SilverWriter(conn_factory_factory()).write_evidence(record)
 
-    assert len(captured_calls["executes"]) == 2
-    staged_sql, staged_params = captured_calls["executes"][0]
-    merge_sql, merge_params = captured_calls["executes"][1]
+    # One execute, not two — no separate CREATE VIEW step.
+    assert len(captured_calls["executes"]) == 1
+    merge_sql, merge_params = captured_calls["executes"][0]
 
-    # Staged view SQL
-    assert "CREATE OR REPLACE TEMPORARY VIEW _silver_staged" in staged_sql
-    assert "VALUES" in staged_sql
-    # Envelope columns are part of the staged view's column list
-    assert "run_id" in staged_sql
-    assert "preparer_initials" in staged_sql
-    assert "reviewer_date" in staged_sql
-    # 6 rows × 17 cols (10 original + 7 envelope per task_02a) = 102 params
-    assert len(staged_params) == 102
-    # Merge SQL
+    # The single statement is a MERGE with VALUES inlined as a USING subquery.
     assert "MERGE INTO audit_dev.silver.evidence" in merge_sql
+    assert "USING (" in merge_sql
+    assert "VALUES" in merge_sql
+    # No CREATE VIEW anywhere — that's what the fix removes.
+    assert "CREATE OR REPLACE TEMPORARY VIEW" not in merge_sql
+    assert "CREATE VIEW" not in merge_sql
+
+    # Envelope columns present in the inlined column list
+    assert "run_id" in merge_sql
+    assert "preparer_initials" in merge_sql
+    assert "reviewer_date" in merge_sql
+
+    # MERGE join keys
     assert "t.engagement_id = s.engagement_id" in merge_sql
     assert "t.control_id    = s.control_id" in merge_sql
     assert "t.attribute_id  = s.attribute_id" in merge_sql
     assert "t.quarter       = s.quarter" in merge_sql
     assert "WHEN MATCHED THEN UPDATE SET *" in merge_sql
     assert "WHEN NOT MATCHED THEN INSERT *" in merge_sql
-    assert merge_params is None  # MERGE has no parameters
+
+    # 6 rows × 17 cols (10 original + 7 envelope per task_02a) = 102 params
+    # carried by the single MERGE call.
+    assert len(merge_params) == 102
 
 
 def test_write_evidence_dc2_writes_four_row_payload(conn_factory_factory, captured_calls) -> None:
     record = _make_record(control_id="DC-2")
     SilverWriter(conn_factory_factory()).write_evidence(record)
 
-    staged_params = captured_calls["executes"][0][1]
+    merge_params = captured_calls["executes"][0][1]
     # 4 rows × 17 cols (10 original + 7 envelope per task_02a)
-    assert len(staged_params) == 68
+    assert len(merge_params) == 68
     # All 4 attribute IDs present
-    attrs = sorted(v for k, v in staged_params.items() if k.startswith("attribute_id_"))
+    attrs = sorted(v for k, v in merge_params.items() if k.startswith("attribute_id_"))
     assert attrs == ["A", "B", "C", "D"]
 
 
