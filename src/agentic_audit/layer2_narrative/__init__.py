@@ -25,8 +25,14 @@ from agentic_audit.layer2_narrative.prompt_loader import (
     PROMPTS_DIR,
     load_prompt,
 )
+from agentic_audit.layer2_narrative.silver_reader import (
+    SilverEvidenceReader,
+    SilverReadError,
+)
 
 __all__ = [
     "PROMPTS_DIR",
+    "SilverEvidenceReader",
+    "SilverReadError",
     "load_prompt",
 ]
