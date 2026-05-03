@@ -178,6 +178,56 @@ def test_explode_narrative_carries_attribute_check_payload() -> None:
     assert parsed["evidence_cell_refs"] == ["DC2_WP!A1"]
 
 
+# ---------- envelope columns (step_05_task_02a) --------------------------
+
+
+def test_explode_propagates_run_id_to_every_row() -> None:
+    """Every silver row produced from one ExtractedEvidence shares the same
+    run_id. Downstream readers reconstruct ExtractedEvidence from any row's
+    envelope, so the redundancy is intentional and required."""
+    record = _make_record(control_id="DC-9")
+    rows = SilverWriter._explode_to_silver_rows(record)
+    assert all(r.run_id == "01J0F7M5XQXM2QYAY8X8X8X8X8" for r in rows)
+
+
+def test_explode_propagates_preparer_signoff_to_every_row() -> None:
+    record = _make_record(control_id="DC-9")
+    rows = SilverWriter._explode_to_silver_rows(record)
+    assert all(r.preparer_initials == "AB" for r in rows)
+    assert all(r.preparer_role == "preparer" for r in rows)
+    assert all(r.preparer_date == UTC_TS for r in rows)
+
+
+def test_explode_propagates_reviewer_signoff_to_every_row() -> None:
+    record = _make_record(control_id="DC-2")
+    rows = SilverWriter._explode_to_silver_rows(record)
+    assert all(r.reviewer_initials == "CD" for r in rows)
+    assert all(r.reviewer_role == "reviewer" for r in rows)
+    assert all(r.reviewer_date == UTC_TS for r in rows)
+
+
+def test_silver_evidence_row_rejects_missing_envelope() -> None:
+    """SilverEvidenceRow's envelope fields are required at write time —
+    Layer 1 always knows them. The Delta column is nullable for back-compat
+    only; the Python writer never produces a row without them."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        SilverEvidenceRow(
+            evidence_id=1,
+            engagement_id="x",
+            control_id="DC-9",
+            attribute_id="A",
+            quarter="Q1",
+            source_path="/p",
+            source_file_hash="h",
+            evidence_type="workpaper-row",
+            narrative="{}",
+            ingested_at=UTC_TS,
+            # Envelope fields omitted — should fail
+        )
+
+
 # ---------- _build_values_clause -----------------------------------------
 
 
@@ -187,11 +237,15 @@ def test_build_values_clause_returns_one_tuple_per_row() -> None:
     params, clause = SilverWriter._build_values_clause(rows)
     # Count row-tuple opens — each row starts with `(%(`. There's one per row.
     assert clause.count("(%(") == 6
-    # 6 rows × 10 columns = 60 named params
-    assert len(params) == 60
+    # 6 rows × 17 columns (10 original + 7 envelope per task_02a) = 102 params
+    assert len(params) == 102
     assert "evidence_id_0" in params
     assert "narrative_5" in params
     assert "%(evidence_id_0)s" in clause
+    # Envelope columns present
+    assert "run_id_0" in params
+    assert "preparer_initials_0" in params
+    assert "reviewer_date_5" in params
 
 
 # ---------- SilverWriter.write_evidence — happy path ---------------------
@@ -249,8 +303,12 @@ def test_write_evidence_dc9_executes_staged_view_and_merge(
     # Staged view SQL
     assert "CREATE OR REPLACE TEMPORARY VIEW _silver_staged" in staged_sql
     assert "VALUES" in staged_sql
-    # 6 rows × 10 cols = 60 params
-    assert len(staged_params) == 60
+    # Envelope columns are part of the staged view's column list
+    assert "run_id" in staged_sql
+    assert "preparer_initials" in staged_sql
+    assert "reviewer_date" in staged_sql
+    # 6 rows × 17 cols (10 original + 7 envelope per task_02a) = 102 params
+    assert len(staged_params) == 102
     # Merge SQL
     assert "MERGE INTO audit_dev.silver.evidence" in merge_sql
     assert "t.engagement_id = s.engagement_id" in merge_sql
@@ -267,8 +325,8 @@ def test_write_evidence_dc2_writes_four_row_payload(conn_factory_factory, captur
     SilverWriter(conn_factory_factory()).write_evidence(record)
 
     staged_params = captured_calls["executes"][0][1]
-    # 4 rows × 10 cols
-    assert len(staged_params) == 40
+    # 4 rows × 17 cols (10 original + 7 envelope per task_02a)
+    assert len(staged_params) == 68
     # All 4 attribute IDs present
     attrs = sorted(v for k, v in staged_params.items() if k.startswith("attribute_id_"))
     assert attrs == ["A", "B", "C", "D"]

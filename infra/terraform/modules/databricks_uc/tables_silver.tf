@@ -162,6 +162,55 @@ resource "databricks_sql_table" "silver_evidence" {
     type    = "timestamp"
     comment = "Bronze→silver ETL timestamp."
   }
+  # ---- Envelope columns (step_05_task_02a) ------------------------------
+  # Added so that SilverEvidenceReader can faithfully reconstruct the full
+  # ExtractedEvidence (silver = round-trip, not lossy projection). Layer 1
+  # populates these from ExtractedEvidence.run_id / .preparer / .reviewer.
+  # Nullable on existing rows pre-migration; populated after re-extract.
+  # See privateDocs/step_05_layer2_narrative.md "Architectural decision —
+  # what return type for SilverEvidenceReader.read(...)" (Option A).
+  column {
+    name     = "run_id"
+    type     = "string"
+    nullable = true
+    comment  = "Layer 1 extraction run identifier. Same value across all rows produced by one extract() call. NULL for rows ingested before step_05_task_02a migration."
+  }
+  column {
+    name     = "preparer_initials"
+    type     = "string"
+    nullable = true
+    comment  = "Workpaper preparer initials (2-4 chars). NULL pre-migration. Source: ExtractedEvidence.preparer.initials."
+  }
+  column {
+    name     = "preparer_role"
+    type     = "string"
+    nullable = true
+    comment  = "Always 'preparer' when populated. Kept as a column (not a constant) so the schema mirrors the SignOff model 1:1."
+  }
+  column {
+    name     = "preparer_date"
+    type     = "timestamp"
+    nullable = true
+    comment  = "Date the preparer signed the workpaper. Source: ExtractedEvidence.preparer.date."
+  }
+  column {
+    name     = "reviewer_initials"
+    type     = "string"
+    nullable = true
+    comment  = "Workpaper reviewer initials (2-4 chars). NULL pre-migration. Source: ExtractedEvidence.reviewer.initials."
+  }
+  column {
+    name     = "reviewer_role"
+    type     = "string"
+    nullable = true
+    comment  = "Always 'reviewer' when populated. Kept as a column (not a constant) so the schema mirrors the SignOff model 1:1."
+  }
+  column {
+    name     = "reviewer_date"
+    type     = "timestamp"
+    nullable = true
+    comment  = "Date the reviewer signed the workpaper. Source: ExtractedEvidence.reviewer.date."
+  }
 }
 
 resource "databricks_sql_table" "silver_cross_file_validations" {
