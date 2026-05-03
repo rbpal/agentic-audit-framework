@@ -103,21 +103,27 @@ def _attribute_check_to_narrative(check: AttributeCheck) -> str:
     )
 
 
-_STAGED_VIEW_SQL = """
-CREATE OR REPLACE TEMPORARY VIEW _silver_staged AS
-SELECT * FROM (
-    VALUES {values_clause}
-) AS s (
-    evidence_id, engagement_id, control_id, attribute_id, quarter,
-    source_path, source_file_hash, evidence_type, narrative, ingested_at,
-    run_id, preparer_initials, preparer_role, preparer_date,
-    reviewer_initials, reviewer_role, reviewer_date
-)
-"""
-
+# Single-statement MERGE with the per-row VALUES inlined as a USING
+# subquery. Why a single statement instead of CREATE TEMPORARY VIEW +
+# MERGE? Databricks SQL forbids parameter markers (`:name`) in DDL
+# (CREATE VIEW, CREATE TABLE, ALTER, etc.) — see
+# UNSUPPORTED_FEATURE.PARAMETER_MARKER_IN_UNEXPECTED_STATEMENT. Param
+# markers ARE allowed in DML (MERGE, INSERT, UPDATE), so this single
+# MERGE statement carries the values via params and avoids the DDL
+# restriction entirely. As a bonus, no temp view to clean up and the
+# whole upsert is one atomic operation.
 _MERGE_SQL = """
 MERGE INTO audit_dev.silver.evidence AS t
-USING _silver_staged AS s
+USING (
+    SELECT * FROM (
+        VALUES {values_clause}
+    ) AS s (
+        evidence_id, engagement_id, control_id, attribute_id, quarter,
+        source_path, source_file_hash, evidence_type, narrative, ingested_at,
+        run_id, preparer_initials, preparer_role, preparer_date,
+        reviewer_initials, reviewer_role, reviewer_date
+    )
+) AS s
    ON  t.engagement_id = s.engagement_id
   AND t.control_id    = s.control_id
   AND t.attribute_id  = s.attribute_id
@@ -190,14 +196,19 @@ class SilverWriter:
     )
     def write_evidence(self, record: ExtractedEvidence) -> None:
         """MERGE all per-attribute rows for one (engagement, control, quarter)
-        into `audit_dev.silver.evidence`. Atomic per record (one MERGE)."""
+        into `audit_dev.silver.evidence` in a single atomic statement.
+
+        Per-row values are passed as named parameters via the MERGE's
+        USING subquery — Databricks SQL supports parameter markers in
+        DML but not DDL, so this one-statement MERGE replaces the
+        previous CREATE VIEW + MERGE pair.
+        """
         rows = self._explode_to_silver_rows(record)
         params, values_clause = self._build_values_clause(rows)
-        staged_sql = _STAGED_VIEW_SQL.format(values_clause=values_clause)
+        merge_sql = _MERGE_SQL.format(values_clause=values_clause)
 
         with self._conn_factory() as conn, conn.cursor() as cur:
-            cur.execute(staged_sql, params)
-            cur.execute(_MERGE_SQL)
+            cur.execute(merge_sql, params)
 
     @staticmethod
     def _build_values_clause(
