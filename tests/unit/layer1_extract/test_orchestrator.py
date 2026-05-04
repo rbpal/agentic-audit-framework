@@ -73,7 +73,6 @@ def _row(
     if sheet_name is None:
         sheet_name = "DC-9 Billing" if control_id == "DC-9" else "DC-2 Variance"
     return BronzeWorkpaperRow(
-        ingestion_id=row_index,
         source_path=f"/Volumes/audit_dev/bronze/raw_pdfs/corpus/v2/workpapers/dc{control_id.split('-')[1]}_{quarter}_ref.xlsx",
         file_hash=file_hash,
         engagement_id="alpha-pension-fund-2025",

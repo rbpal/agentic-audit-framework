@@ -19,18 +19,6 @@ resource "databricks_sql_table" "bronze_workpapers_raw" {
   comment = "Raw rows ingested from xlsx workpaper files. One row per (file, sheet, row). Loose schema — raw_data is a string-typed map of column-name → value. Source of truth for silver-tier derivation. step_03_task_06."
 
   column {
-    # NOTE: this column is RESERVED FOR FUTURE USE and is currently always
-    # NULL. The original "Auto-incremented per ingestion event" comment was
-    # aspirational — the column is NOT GENERATED ALWAYS AS IDENTITY (Delta
-    # therefore does not auto-fill) and src/agentic_audit/ingest/ never
-    # populates it. Lineage and dedup downstream go via (source_path,
-    # source_file_hash, sheet_name, row_index), not this column.
-    name     = "ingestion_id"
-    type     = "bigint"
-    nullable = true
-    comment  = "RESERVED FOR FUTURE USE — currently always NULL (no auto-fill, ingest does not populate). Lineage uses (source_path, source_file_hash)."
-  }
-  column {
     name    = "source_path"
     type    = "string"
     comment = "Full ADLS path to the xlsx file ingested (abfss://… form)."
@@ -82,18 +70,6 @@ resource "databricks_sql_table" "bronze_tocs_raw" {
 
   comment = "Raw engagement TOC JSON files (gold answers per quarter). One row per (file). raw_json holds the entire payload as a string for downstream parsing in silver. step_03_task_06."
 
-  column {
-    # NOTE: this column is RESERVED FOR FUTURE USE and is currently always
-    # NULL. The original "Auto-incremented per ingestion event" comment was
-    # aspirational — the column is NOT GENERATED ALWAYS AS IDENTITY (Delta
-    # therefore does not auto-fill) and src/agentic_audit/ingest/ never
-    # populates it. Lineage and dedup downstream go via (source_path,
-    # source_file_hash, sheet_name, row_index), not this column.
-    name     = "ingestion_id"
-    type     = "bigint"
-    nullable = true
-    comment  = "RESERVED FOR FUTURE USE — currently always NULL (no auto-fill, ingest does not populate). Lineage uses (source_path, source_file_hash)."
-  }
   column {
     name    = "source_path"
     type    = "string"
