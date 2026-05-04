@@ -62,7 +62,6 @@ def test_parse_unknown_control_raises() -> None:
 
 def _row(
     *,
-    ingestion_id: int | None = 1,
     source_path: str = "/Volumes/audit_dev/bronze/raw_pdfs/corpus/v2/workpapers/dc9_Q1_ref.xlsx",
     file_hash: str = "a" * 64,
     engagement_id: str = "alpha-pension-fund-2025",
@@ -73,7 +72,6 @@ def _row(
     ingested_by: str = "smoke-ingest",
 ) -> tuple:
     return (
-        ingestion_id,
         source_path,
         file_hash,
         engagement_id,
@@ -132,7 +130,7 @@ def conn_factory_factory(captured_calls):
 
 
 def test_read_happy_path_returns_rows(conn_factory_factory, captured_calls) -> None:
-    rows = [_row(ingestion_id=i, row_index=i) for i in (1, 2, 3)]
+    rows = [_row(row_index=i) for i in (1, 2, 3)]
     reader = BronzeReader(conn_factory_factory(rows))
 
     result = reader.read("alpha-pension-fund-2025", "DC-9", "Q1")
@@ -140,42 +138,7 @@ def test_read_happy_path_returns_rows(conn_factory_factory, captured_calls) -> N
     assert len(result) == 3
     assert all(isinstance(r, BronzeWorkpaperRow) for r in result)
     assert all(r.control_id == "DC-9" and r.quarter == "Q1" for r in result)
-    assert [r.ingestion_id for r in result] == [1, 2, 3]
-
-
-def test_read_tolerates_null_ingestion_id() -> None:
-    """The bronze table's ``ingestion_id`` column is a plain nullable bigint
-    (despite the misleading "Auto-incremented" Terraform comment). The
-    smoke ingest doesn't populate it, so live rows arrive with
-    ``ingestion_id=None``. The reader must round-trip these rows without
-    raising — downstream consumers (attribute_checks, orchestrator) do
-    not read this field.
-    """
-    rows = [
-        _row(ingestion_id=None, row_index=1),
-        _row(ingestion_id=None, row_index=2),
-    ]
-
-    @contextmanager
-    def factory():
-        cur = MagicMock()
-        cur.fetchall.return_value = rows
-        cur.execute = MagicMock()
-        cur.__enter__.return_value = cur
-        cur.__exit__.return_value = False
-        conn = MagicMock()
-        conn.cursor.return_value = cur
-        conn.__enter__.return_value = conn
-        conn.__exit__.return_value = False
-        yield conn
-
-    reader = BronzeReader(factory)
-    result = reader.read("alpha-pension-fund-2025", "DC-9", "Q1")
-    assert len(result) == 2
-    assert [r.ingestion_id for r in result] == [None, None]
-    # Other fields still populated correctly
-    assert all(r.control_id == "DC-9" and r.quarter == "Q1" for r in result)
-    assert [r.row_index for r in result] == [1, 2]
+    assert [r.row_index for r in result] == [1, 2, 3]
 
 
 def test_read_empty_rows_returns_empty_list(conn_factory_factory) -> None:
@@ -234,7 +197,6 @@ def test_read_row_with_unparseable_path_raises(conn_factory_factory) -> None:
 
 def test_read_handles_null_raw_data(conn_factory_factory) -> None:
     row_with_null = (
-        1,
         "/Volumes/audit_dev/bronze/raw_pdfs/corpus/v2/workpapers/dc9_Q1_ref.xlsx",
         "a" * 64,
         "alpha-pension-fund-2025",
@@ -257,7 +219,6 @@ def test_workpaper_row_rejects_invalid_control_id() -> None:
 
     with pytest.raises(ValidationError):
         BronzeWorkpaperRow(
-            ingestion_id=1,
             source_path="/x.xlsx",
             file_hash="a" * 64,
             engagement_id="eng",

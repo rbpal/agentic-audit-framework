@@ -40,7 +40,6 @@ def _load_rows(xlsx_path: Path) -> list[BronzeWorkpaperRow]:
     """Read an xlsx into the same row shape `BronzeReader.read` returns."""
     wb = openpyxl.load_workbook(xlsx_path, data_only=True)
     out: list[BronzeWorkpaperRow] = []
-    ingestion_id = 0
     # Filename like `dc9_Q1_ref.xlsx` → control DC-9, quarter Q1.
     name = xlsx_path.stem  # e.g. 'dc9_Q1_ref'
     parts = name.split("_")
@@ -54,10 +53,8 @@ def _load_rows(xlsx_path: Path) -> list[BronzeWorkpaperRow]:
             non_empty = {f"col_{j:02d}": str(v) for j, v in enumerate(row) if v is not None}
             if not non_empty:
                 continue
-            ingestion_id += 1
             out.append(
                 BronzeWorkpaperRow(
-                    ingestion_id=ingestion_id,
                     source_path=source_path,
                     file_hash=file_hash,
                     engagement_id="alpha-pension-fund-2025",
