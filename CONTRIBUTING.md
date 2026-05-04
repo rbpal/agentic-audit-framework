@@ -49,8 +49,9 @@ need workspace credentials and burn warehouse time. **You** are the gate.
 **Why the gate:** unit tests mock `cur.execute()` and only inspect SQL
 *strings*, not SQL *semantics*. Two real bugs reached `main` during
 `step_05_task_02` because the integration tests that would have caught
-them were skipped in CI. See `docs/TECH_DEBT.md` > "@pytest.mark.slow
-integration tests" for the full incident write-up. Don't be the third.
+them were skipped in CI (PRs #57 and #58 were both single-line fixes
+to bugs that any one live integration-test run would have caught).
+Don't be the third.
 
 ### What you need
 
@@ -133,4 +134,3 @@ is the master-plan task identifier when applicable
 | `tests/integration/` | Live-warehouse tests. `@pytest.mark.slow`, env-gated. Run by `make integration-test-warehouse`. |
 | `infra/terraform/` | IaC for the dev environment. Root module is `infra/terraform/`; per-env config under `infra/terraform/envs/dev/`. |
 | `scripts/` | Operator tools (driver scripts, env-var helpers). Not part of the runtime pipeline. |
-| `docs/` | Long-form repo docs. `TECH_DEBT.md` is the centralized debt register. |
