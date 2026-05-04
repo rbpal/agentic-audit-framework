@@ -82,37 +82,61 @@ dedicated task, not bundled into something else.
 
 ---
 
-## infra/terraform/errored.tfstate
+## ~~infra/terraform/errored.tfstate~~ — RESOLVED 2026-05-03
 
-**Discovered:** step_02 (no PR — present since the early Terraform
-work). Re-noted during step_05_task_02 (2026-05-03).
+The original entry has been resolved by deleting the local file.
+Investigation during the cleanup also re-shaped what the entry was
+actually about — leaving the historical context here so future readers
+don't trip on the same false-positive.
 
-**What's wrong:** A stale snapshot of Terraform state from a prior
-failed `terraform apply` lives at
-[`infra/terraform/errored.tfstate`](../infra/terraform/errored.tfstate).
-It is **not** the active state (the active state is in the Azure
-backend per `backend.tf`), but its presence in the working tree creates
-two failure modes:
+**What we initially thought** (and what the entry described): a stale
+forensic snapshot of Terraform state from a prior failed apply, sitting
+in the working tree.
 
-1. **Confusion** — newcomers may think it represents current state.
-2. **Accidental promotion** — a typo'd `terraform apply
-   -state=errored.tfstate` would treat the stale snapshot as the truth
-   and try to resync.
+**What we discovered while cleaning up:**
 
-**Why we left it:** Removing it requires confirming the active backend
-state is fully consistent (the original error was during the openai
-module apply per the file's contents). Step_05 doesn't need the file
-removed to function; the active backend state has been working
-correctly for all subsequent applies.
+1. **The file was never tracked by git.** `.gitignore`'s `*.tfstate`
+   pattern correctly excluded it. `git ls-files --error-unmatch
+   infra/terraform/errored.tfstate` returned "did not match any file(s)
+   known to git". So it had never been committed, never been pushed,
+   never been on GitHub.
+2. **It DID contain real plaintext secrets** — `dlsaafrbpaldev` storage
+   account `primary_access_key` + `secondary_access_key` + derived
+   connection strings + App Insights `instrumentation_key`. The
+   `.gitignore` warning *"CRITICAL: plaintext secrets live here"* was
+   exactly right about the file's contents.
+3. **No public exposure occurred.** The combination of #1 and #2 means
+   the keys were real and live, but they only existed locally — not in
+   git history, not on GitHub, not visible to forks (repo had 0 forks
+   anyway).
+4. **Cleanup was therefore trivial:** `rm` the local file (NOT
+   `git rm` — there was nothing to git-remove). No history rewrite,
+   no force-push, no key rotation needed.
 
-**What to do when we come back:**
+**Lessons captured for future similar findings:**
 
-- Confirm `terraform plan` from the root shows no drift (it currently
-  doesn't — verified during step_05_task_02a cloud step).
-- `git rm infra/terraform/errored.tfstate`.
-- Add `*.tfstate` to `.gitignore` if not already there (so future
-  errored states don't get committed).
-- One-line PR.
+1. **Always confirm git tracking before assuming public exposure.**
+   `.gitignore` blocks adds; if a file matches a pattern, it's
+   probably never been tracked even if it sits in the working tree.
+   Run `git ls-files --error-unmatch <path>` to verify before
+   escalating to "rotate keys / rewrite history".
+2. **`.gitignore`'s `CRITICAL` comments work as designed.** This was
+   the specific scenario the comment was put there to guard against —
+   a `*.tfstate` file appearing in the working tree with secrets in
+   it. The pattern caught the commit; the comment caught the
+   developer's attention before the cleanup. System working.
+3. **Backup-side risk is a separate concern.** A local file with
+   secrets on a laptop with cloud backup (Time Machine / iCloud /
+   Dropbox) could exfiltrate the keys outside git's blast radius.
+   That's a contributor-side hygiene question, not a repo question.
+
+**Action taken:**
+
+- `rm infra/terraform/errored.tfstate` locally (this PR's commit
+  message records the deletion since the file itself wasn't tracked).
+- This entry retained as a resolved-with-context record so future
+  contributors who see references in old PRs / docs to
+  `errored.tfstate` understand what it was and why it's gone.
 
 ---
 
