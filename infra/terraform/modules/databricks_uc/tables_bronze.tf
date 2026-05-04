@@ -25,17 +25,10 @@ resource "databricks_sql_table" "bronze_workpapers_raw" {
     # therefore does not auto-fill) and src/agentic_audit/ingest/ never
     # populates it. Lineage and dedup downstream go via (source_path,
     # source_file_hash, sheet_name, row_index), not this column.
-    #
-    # See docs/TECH_DEBT.md > "bronze ingestion_id" for reactivation
-    # options (GENERATED ALWAYS AS IDENTITY + delta.columnMapping prereq,
-    # OR populate from ingest with a per-batch ULID).
-    #
-    # Discovered during step_05_task_02 cloud step (privateDocs/
-    # step_05_layer2_narrative.md > Execution log > Hot-fix #1 PR #57).
     name     = "ingestion_id"
     type     = "bigint"
     nullable = true
-    comment  = "RESERVED FOR FUTURE USE — currently always NULL (no auto-fill, ingest does not populate). Lineage uses (source_path, source_file_hash); see docs/TECH_DEBT.md."
+    comment  = "RESERVED FOR FUTURE USE — currently always NULL (no auto-fill, ingest does not populate). Lineage uses (source_path, source_file_hash)."
   }
   column {
     name    = "source_path"
@@ -96,17 +89,10 @@ resource "databricks_sql_table" "bronze_tocs_raw" {
     # therefore does not auto-fill) and src/agentic_audit/ingest/ never
     # populates it. Lineage and dedup downstream go via (source_path,
     # source_file_hash, sheet_name, row_index), not this column.
-    #
-    # See docs/TECH_DEBT.md > "bronze ingestion_id" for reactivation
-    # options (GENERATED ALWAYS AS IDENTITY + delta.columnMapping prereq,
-    # OR populate from ingest with a per-batch ULID).
-    #
-    # Discovered during step_05_task_02 cloud step (privateDocs/
-    # step_05_layer2_narrative.md > Execution log > Hot-fix #1 PR #57).
     name     = "ingestion_id"
     type     = "bigint"
     nullable = true
-    comment  = "RESERVED FOR FUTURE USE — currently always NULL (no auto-fill, ingest does not populate). Lineage uses (source_path, source_file_hash); see docs/TECH_DEBT.md."
+    comment  = "RESERVED FOR FUTURE USE — currently always NULL (no auto-fill, ingest does not populate). Lineage uses (source_path, source_file_hash)."
   }
   column {
     name    = "source_path"

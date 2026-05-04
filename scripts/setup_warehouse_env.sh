@@ -21,8 +21,7 @@
 #
 # This script is the canonical entry point for the workflow documented
 # in CONTRIBUTING.md > "Running integration tests against a live
-# Databricks warehouse". See docs/TECH_DEBT.md > "@pytest.mark.slow
-# integration tests" for context on why this exists.
+# Databricks warehouse".
 
 # Refuse to run if executed instead of sourced. When sourced,
 # BASH_SOURCE[0] differs from $0; when executed directly they match.
