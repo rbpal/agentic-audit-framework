@@ -1,4 +1,4 @@
-.PHONY: help setup test lint type ci clean
+.PHONY: help setup test lint type ci clean integration-test-warehouse
 
 # Export VIRTUAL_ENV so Poetry consistently uses the in-project .venv.
 # Workaround for Poetry 2.3.4's `env use` silently-ignored bug on macOS.
@@ -16,6 +16,18 @@ setup:  ## Install Poetry deps and pre-commit hooks (first-time bootstrap)
 
 test:  ## Run pytest with coverage
 	poetry run pytest --cov=src/agentic_audit --cov-report=term-missing
+
+integration-test-warehouse:  ## Run @pytest.mark.slow integration tests against live Databricks warehouse (requires env vars — see CONTRIBUTING.md)
+	@if [ -z "$$DATABRICKS_HOST" ] || [ -z "$$DATABRICKS_SQL_WAREHOUSE_ID" ] || [ -z "$$DATABRICKS_TOKEN" ]; then \
+		echo "ERROR: missing required env vars for live integration tests."; \
+		echo ""; \
+		echo "Set them with:  source scripts/setup_warehouse_env.sh"; \
+		echo "Or export DATABRICKS_HOST / DATABRICKS_SQL_WAREHOUSE_ID / DATABRICKS_TOKEN manually."; \
+		echo ""; \
+		echo "See CONTRIBUTING.md > 'Running integration tests against a live Databricks warehouse'."; \
+		exit 1; \
+	fi
+	poetry run pytest -m slow tests/integration/ -v
 
 lint:  ## Run ruff linter + formatter check
 	poetry run ruff check .
