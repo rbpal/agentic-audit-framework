@@ -140,64 +140,91 @@ in the working tree.
 
 ---
 
-## `@pytest.mark.slow` integration tests need a documented workflow
+## ~~`@pytest.mark.slow` integration tests need a documented workflow~~ — RESOLVED 2026-05-03 (Path A)
 
 **Discovered:** step_05_task_02 cloud step. Both hot-fixes (PR `#57`,
-PR `#58`) were in code paths that had only ever been mocked. The
-integration tests that would have caught both
-([`tests/integration/test_layer1_e2e.py`](../tests/integration/test_layer1_e2e.py),
-[`tests/integration/test_layer2_silver_reader_e2e.py`](../tests/integration/test_layer2_silver_reader_e2e.py))
-are `@pytest.mark.slow` and skipped in CI.
+PR `#58`) were in code paths that had only ever been mocked.
 
-**What's wrong:** "Marked slow, never run live" is a class of bug, not
-an instance. Any PR that touches a code path running against live
-Databricks can introduce a similar bug today, and there's no automated
-gate.
+**Resolution chosen: Path A — PR-author-runs flow.** Path B (CI lane
+with warehouse creds) deferred until team grows past 1 person.
 
-**Why we left it:** Adding a CI lane with warehouse credentials is
-non-trivial (secret management, cost-per-run, warehouse cold-start
-latency in CI) and out of scope for step_05.
+**Action taken:**
 
-**What to do when we come back:**
+- Added [`scripts/setup_warehouse_env.sh`](../scripts/setup_warehouse_env.sh)
+  — interactive helper that exports the three required env vars
+  (`DATABRICKS_HOST`, `DATABRICKS_SQL_WAREHOUSE_ID`,
+  `DATABRICKS_TOKEN`). Token read via `read -s` (silent — no terminal
+  echo, no shell history). Refuses to run if executed instead of
+  sourced. Verifies and prints HOST + WAREHOUSE values plus token
+  length only — never the token value.
+- Added Make target `make integration-test-warehouse`
+  ([`Makefile`](../Makefile)). Pre-flight checks the three env vars;
+  if missing, prints a clear error pointing back at the setup script
+  and exits without running tests. If env is good, runs
+  `pytest -m slow tests/integration/ -v`.
+- Added [`CONTRIBUTING.md`](../CONTRIBUTING.md) with a section
+  "Running integration tests against a live Databricks warehouse":
+  - When to run them (concrete list of paths whose changes warrant
+    the gate, including `layer1_extract/`, `silver_reader.py`,
+    `databricks_uc/tables_*.tf`, the operator scripts, and SQL string
+    construction in general).
+  - Why the gate exists (links back to this entry's incident write-up).
+  - How to generate a PAT in the Databricks UI (with the
+    "BI Tools scope, NOT Other APIs" gotcha called out).
+  - How to use the setup script + Make target.
+  - Cost/cleanup notes (test runtime, scoped DELETE cleanup, PAT
+    auto-expiry).
 
-Two paths, pick based on team preference:
+**Trigger condition for Path B revisit:** team has more than one
+contributor, OR a "marked-slow-skipped-in-CI" bug reaches main again
+despite the documented PR-author-runs flow.
 
-| Option | What | Trade-off |
-|---|---|---|
-| **A** PR-author-runs flow | Add a CONTRIBUTING.md item: "before merging any PR that touches Layer 1 / Layer 2 code, run `make integration-test-warehouse` locally". Plus a Make target that wraps the env-var dance (`DATABRICKS_HOST` / `DATABRICKS_TOKEN` / `DATABRICKS_SQL_WAREHOUSE_ID`). | Honor-system; humans forget. |
-| **B** CI lane with creds | Add a GitHub Actions job that runs `pytest -m slow` against the dev warehouse. Gated to the `main` branch and to PRs from trusted contributors only (to avoid public-fork PR token leak). | Real automation; needs secret management + cost monitoring. |
+**What Path B would look like when we come back:**
 
-Recommend **A first, B when team grows past 1 person.**
+- GitHub Actions job that runs `pytest -m slow tests/integration/`
+  against the dev warehouse.
+- Workflow file gated to `pull_request` events on the `main` branch
+  AND to PRs from trusted contributors only (to avoid public-fork PR
+  token leak — public-fork PRs cannot access secrets by default in
+  GitHub Actions, but verify the safeguard).
+- Secret management: store the PAT as a repo-level GitHub Actions
+  secret. Rotate quarterly. Use a dedicated service-principal-style
+  token (separate from human dev tokens) so audit trails are clean.
+- Cost monitoring: serverless warehouse cold-start adds ~2 min per
+  run; warm runs are ~30–60 sec. Budget ~$0.50/PR if warehouse is
+  cold; trivial if warm.
 
 ---
 
-## Databricks PAT creation flow needs documentation
+## ~~Databricks PAT creation flow needs documentation~~ — RESOLVED 2026-05-03
 
 **Discovered:** step_05_task_02 cloud step. The "BI Tools scope" vs
 "Other APIs" choice in the Databricks PAT generation UI is non-obvious
-— "BI Tools" is the right choice for SQL-warehouse access (which is
-what `scripts/run_layer1.py` and the integration tests use), but the
+— "BI Tools" is the right choice for SQL-warehouse access, but the
 default-looking option is "Other APIs" with a manual scope picker.
 
-**What's wrong:** New contributor running an integration test for the
-first time has to either (a) figure this out by trial and error, or
-(b) ask someone.
+**Resolved by the same PR that resolved item #3** (slow-test workflow).
+Both items had overlapping deliverables; addressing them in one PR
+avoided duplicating the CONTRIBUTING.md section + the setup script.
 
-**Why we left it:** Step_05 doesn't ship contributor onboarding. This
-is a documentation task, not a code task.
+**Action taken:**
 
-**What to do when we come back:**
+- [`CONTRIBUTING.md`](../CONTRIBUTING.md) > "Running integration tests
+  against a live Databricks warehouse" > "What you need" — step-by-step
+  PAT generation walkthrough including the explicit "**Scope:** click
+  **BI Tools** tab (NOT 'Other APIs' — that's the common gotcha)"
+  callout, plus lifetime guidance and the "copy immediately, Databricks
+  shows it once" warning.
+- [`scripts/setup_warehouse_env.sh`](../scripts/setup_warehouse_env.sh)
+  prompts for the PAT via `read -s` and exports the three required env
+  vars. Also reminds the contributor of the BI-Tools-scope gotcha
+  inline ("Scope: BI Tools (NOT 'Other APIs')") just before the token
+  prompt — so the gotcha appears at the moment of decision, not just
+  in static docs they may have skimmed past.
 
-- Add a `CONTRIBUTING.md` section "Running integration tests against a
-  live Databricks warehouse" with a step-by-step PAT creation flow:
-  - Workspace → Settings → Developer → Access tokens
-  - Generate new token, **scope = BI Tools** (not Other APIs)
-  - Lifetime = 1 day for one-off test runs, longer for ongoing dev
-  - Copy immediately — Databricks shows it once
-- Add a small `scripts/setup_warehouse_env.sh` that prompts for the
-  PAT via `read -s` and exports the three required env vars. Also
-  echoes verification (HOST / WAREHOUSE_ID values + TOKEN length only).
-- Reference both from the slow-test entry above.
+**Trigger condition for revisit:** the BI Tools / Other APIs naming
+changes in the Databricks UI (unlikely but possible — Databricks
+occasionally renames scope buckets). Update both files if it does.
 
 ---
 
