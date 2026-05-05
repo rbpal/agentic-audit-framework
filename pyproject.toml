@@ -97,7 +97,15 @@ module = "tests.*"
 disallow_untyped_defs = false
 
 [[tool.mypy.overrides]]
-module = ["langgraph.*", "mlflow.*", "openpyxl.*", "streamlit.*", "tenacity.*"]
+module = [
+    "azure.identity.*",
+    "langgraph.*",
+    "mlflow.*",
+    "openai.*",
+    "openpyxl.*",
+    "streamlit.*",
+    "tenacity.*",
+]
 ignore_missing_imports = true
 
 # ----- Pytest: async auto, coverage floor ---------------------------------
