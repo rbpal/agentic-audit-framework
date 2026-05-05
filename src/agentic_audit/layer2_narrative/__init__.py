@@ -21,6 +21,10 @@ versioned in git — no MLflow dependency. ``load_prompt(version)``
 resolves a version string (e.g. ``"v1.0"``) to a filename.
 """
 
+from agentic_audit.layer2_narrative.generator import (
+    AZURE_OPENAI_API_VERSION,
+    NarrativeGenerator,
+)
 from agentic_audit.layer2_narrative.prompt_loader import (
     PROMPTS_DIR,
     load_prompt,
@@ -31,6 +35,8 @@ from agentic_audit.layer2_narrative.silver_reader import (
 )
 
 __all__ = [
+    "AZURE_OPENAI_API_VERSION",
+    "NarrativeGenerator",
     "PROMPTS_DIR",
     "SilverEvidenceReader",
     "SilverReadError",
