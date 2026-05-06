@@ -62,3 +62,45 @@ resource "azurerm_cognitive_deployment" "gpt4o" {
     capacity = var.model_capacity_tpm
   }
 }
+
+# Local-dev developer access to the data-plane (chat completions API).
+#
+# Why this lives in Terraform rather than as a manual `az role assignment
+# create` (the prior state of the world): the Azure-side authorization
+# model has TWO planes for Cognitive Services:
+#
+#   * Control plane (ARM)   — granted by built-in roles like Owner,
+#                             Contributor, Reader. NOT enough to call the
+#                             chat completions API even with an MSI token.
+#   * Data plane (Cognitive Services own RBAC) — granted by
+#     `Cognitive Services OpenAI User`. This is what lets a principal's
+#     AAD bearer token actually invoke
+#     /openai/deployments/<id>/chat/completions.
+#
+# Step_02 (terraform_iac) granted control-plane roles via the
+# subscription-level Contributor that operators already have via their
+# Visual Studio Enterprise subscription, but did NOT grant data-plane
+# OpenAI User. That gap stayed invisible until step_05_task_03's first
+# integration test, which got a 401 PermissionDenied on chat completions.
+# We unblocked manually via `az role assignment create`; this resource
+# brings that grant under Terraform management so a fresh apply on a
+# clean subscription doesn't re-introduce the gap.
+#
+# Scoped to the Cognitive Services account, NOT the resource group or
+# subscription — narrowest scope that still grants what's needed. Each
+# principal in the list gets one assignment.
+resource "azurerm_role_assignment" "data_plane_user" {
+  for_each = toset(var.data_plane_user_principal_ids)
+
+  scope                = azurerm_cognitive_account.this.id
+  role_definition_name = "Cognitive Services OpenAI User"
+  principal_id         = each.value
+  principal_type       = "User"
+
+  # Intentionally no `description` — that field is immutable on
+  # azurerm_role_assignment, so adding/changing it forces destroy +
+  # recreate, which gives a brief window where the principal has NO
+  # role and any in-flight chat completions get 401. The "why" of
+  # this assignment is documented in the comment block above; that
+  # never needs to round-trip to the cloud.
+}

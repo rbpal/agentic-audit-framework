@@ -21,3 +21,16 @@ name_suffix = "rbpal"
 openai_account_name       = "aoai-aaf-dev"
 openai_model_version      = "2024-11-20"
 openai_model_capacity_tpm = 10
+
+# Local-dev developers granted `Cognitive Services OpenAI User` role
+# on the OpenAI account. Adding a contributor: append their AAD
+# object-id (`az ad signed-in-user show --query id -o tsv`) to this
+# list and `terraform apply`. Removing access: drop the entry +
+# `terraform apply` (Terraform issues the role-assignment delete).
+openai_data_plane_user_principal_ids = [
+  # rajendra_b_pal@msn.com (External / Rajendra B Pal). Originally
+  # granted manually 2026-05-05 via `az role assignment create` to
+  # unblock step_05_task_03's integration smoke test; brought under
+  # Terraform management 2026-05-06.
+  "4c92c956-f8fe-4cdc-91f8-bade7f42d7d1",
+]

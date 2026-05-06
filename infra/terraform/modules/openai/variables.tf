@@ -57,3 +57,43 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "data_plane_user_principal_ids" {
+  description = <<-EOT
+    AAD principal object-IDs that should receive the
+    `Cognitive Services OpenAI User` role on this Cognitive Services
+    account. The role grants the
+    `Microsoft.CognitiveServices/accounts/OpenAI/deployments/chat/completions/action`
+    data action — i.e. the ability to call the chat completions API
+    via Azure AD bearer token (NOT API keys, since `local_auth_enabled
+    = false` is hardcoded above).
+
+    Use this for **local-dev developers**: every user who runs
+    `pytest -m slow tests/integration/test_layer2_generator_e2e.py`
+    locally needs this role on the dev account, otherwise their
+    `DefaultAzureCredential`-minted token gets a 401 PermissionDenied
+    on the chat completions endpoint.
+
+    Workload identities (Databricks job MSI for production runtime)
+    should be granted separately — they need additional scopes that
+    aren't appropriate to bundle here.
+
+    Default empty so applying the module without specifying any user
+    principals does not create role assignments. Discovered the need
+    during step_05_task_03 cloud step when a manual `az role assignment
+    create` had to be run to unblock the integration smoke test.
+
+    Values are AAD object-IDs (GUIDs). Look up via:
+      `az ad signed-in-user show --query id -o tsv`
+  EOT
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for id in var.data_plane_user_principal_ids :
+      can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", id))
+    ])
+    error_message = "Each principal_id must be a GUID (8-4-4-4-12 hex)."
+  }
+}
