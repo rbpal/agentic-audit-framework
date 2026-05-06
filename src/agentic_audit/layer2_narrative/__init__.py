@@ -23,6 +23,7 @@ resolves a version string (e.g. ``"v1.0"``) to a filename.
 
 from agentic_audit.layer2_narrative.generator import (
     AZURE_OPENAI_API_VERSION,
+    WORD_LIMIT,
     NarrativeGenerator,
 )
 from agentic_audit.layer2_narrative.prompt_loader import (
@@ -40,5 +41,6 @@ __all__ = [
     "PROMPTS_DIR",
     "SilverEvidenceReader",
     "SilverReadError",
+    "WORD_LIMIT",
     "load_prompt",
 ]
