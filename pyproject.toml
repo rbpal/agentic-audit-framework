@@ -23,7 +23,8 @@ dependencies = [
     "opentelemetry-instrumentation (>=0.62b0,<0.63)",
     "mlflow (>=3.11.1,<4.0.0)",
     "streamlit (>=1.56.0,<2.0.0)",
-    "pyyaml (>=6.0.3,<7.0.0)"
+    "pyyaml (>=6.0.3,<7.0.0)",
+    "rapidfuzz (>=3.10,<4.0.0)"
 ]
 
 
