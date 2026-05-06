@@ -12,6 +12,7 @@ dependencies = [
     "langgraph (>=1.1.8,<2.0.0)",
     "langchain-openai (>=1.1.15,<2.0.0)",
     "openai (>=2.32.0,<3.0.0)",
+    "azure-identity (>=1.18.0,<2.0.0)",
     "pydantic (>=2.13.3,<3.0.0)",
     "pydantic-settings (>=2.14.0,<3.0.0)",
     "openpyxl (>=3.1.5,<4.0.0)",
@@ -96,7 +97,15 @@ module = "tests.*"
 disallow_untyped_defs = false
 
 [[tool.mypy.overrides]]
-module = ["langgraph.*", "mlflow.*", "openpyxl.*", "streamlit.*", "tenacity.*"]
+module = [
+    "azure.identity.*",
+    "langgraph.*",
+    "mlflow.*",
+    "openai.*",
+    "openpyxl.*",
+    "streamlit.*",
+    "tenacity.*",
+]
 ignore_missing_imports = true
 
 # ----- Pytest: async auto, coverage floor ---------------------------------
