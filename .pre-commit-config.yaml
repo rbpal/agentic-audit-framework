@@ -58,3 +58,23 @@ repos:
     rev: v8.25.1
     hooks:
       - id: gitleaks
+
+  # ─── Terraform: format + validate ────────────────────────────────
+  # Catches format drift + syntax errors before commit. Same posture
+  # ruff has for Python: auto-fix what's auto-fixable, fail loud on
+  # the rest. terraform_validate runs at pre-push (slower; needs
+  # `terraform init` per module) so the local commit loop stays fast.
+  #
+  # Requires the `terraform` CLI on the contributor's PATH (already
+  # required for `terraform plan/apply` workflows).
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.96.1
+    hooks:
+      - id: terraform_fmt
+      - id: terraform_validate
+        stages: [pre-push]
+        args:
+          # Re-init each module if the lockfile / providers go stale.
+          # Defends against the "validate fails locally because
+          # `.terraform/` is from an old branch" footgun.
+          - --hook-config=--retry-once-with-cleanup=true

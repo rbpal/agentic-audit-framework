@@ -1,4 +1,4 @@
-.PHONY: help setup test lint type ci clean integration-test-warehouse
+.PHONY: help setup test lint type ci clean integration-test-warehouse terraform-validate
 
 # Export VIRTUAL_ENV so Poetry consistently uses the in-project .venv.
 # Workaround for Poetry 2.3.4's `env use` silently-ignored bug on macOS.
@@ -35,6 +35,10 @@ lint:  ## Run ruff linter + formatter check
 
 type:  ## Run mypy on src/
 	poetry run mypy src/
+
+terraform-validate:  ## Run terraform_fmt + terraform_validate via pre-commit (catches Terraform format drift + syntax errors). Requires `terraform` CLI on PATH.
+	poetry run pre-commit run terraform_fmt --all-files
+	poetry run pre-commit run terraform_validate --all-files --hook-stage pre-push
 
 ci: lint type test  ## Run everything CI runs (lint + type + test)
 

@@ -49,6 +49,15 @@ terraform.tfvars
 # from step_02_task_07 onward so fresh clones can `terraform init` directly
 # without re-running the bootstrap.
 !infra/terraform/envs/*/backend.conf
+# Per-module .terraform.lock.hcl files are created when the
+# terraform_validate pre-commit hook runs `terraform init` standalone
+# per module (it can't reuse the root's lock file from inside the
+# module dir). They regenerate fresh on every validate run, so
+# committing them is just noise that creates merge conflicts when
+# multiple branches add Terraform code. Root-level lock at
+# infra/terraform/.terraform.lock.hcl IS still committed (governs the
+# real plan/apply path).
+infra/terraform/modules/*/.terraform.lock.hcl
 # ============================================================
 
 # Byte-compiled / optimized / DLL files
