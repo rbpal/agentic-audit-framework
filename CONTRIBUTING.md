@@ -20,6 +20,7 @@ make help     # See every target
 | Command | What it does |
 |---|---|
 | `make test` | Unit tests + coverage report (gate: 90 %) |
+| `make terraform-validate` | `terraform fmt` + `terraform validate` via pre-commit. Run after editing any `.tf` file or before opening an infra PR. |
 | `make lint` | Ruff lint + format check |
 | `make type` | Mypy on `src/` |
 | `make ci`   | Everything CI runs (lint + type + test). Run before pushing. |
