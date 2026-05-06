@@ -27,6 +27,10 @@ from agentic_audit.layer2_narrative.generator import (
     WORD_LIMIT,
     NarrativeGenerator,
 )
+from agentic_audit.layer2_narrative.gold_writer import (
+    GOLD_NARRATIVES_TABLE,
+    GoldNarrativeWriter,
+)
 from agentic_audit.layer2_narrative.prompt_loader import (
     PROMPTS_DIR,
     load_prompt,
@@ -38,7 +42,9 @@ from agentic_audit.layer2_narrative.silver_reader import (
 
 __all__ = [
     "AZURE_OPENAI_API_VERSION",
+    "GOLD_NARRATIVES_TABLE",
     "FactChecker",
+    "GoldNarrativeWriter",
     "NarrativeGenerator",
     "PROMPTS_DIR",
     "SilverEvidenceReader",
