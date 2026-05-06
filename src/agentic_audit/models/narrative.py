@@ -1,12 +1,14 @@
 """Pydantic models for Layer 2 grounded narrative generation.
 
-Three models, each owning one boundary:
+Four models, each owning one boundary:
 
 - ``NarrativeRequest`` — what the prompt template renders against
   (the inputs the generator hands to ``str.Template`` substitution).
 - ``NarrativeResponse`` — the JSON-mode shape Azure OpenAI must return.
   Validated immediately on parse; a malformed response is rejected at
   the boundary, never propagates.
+- ``FactCheckResult`` — verdict from ``FactChecker`` on a narrative.
+  Inlined into ``AttributeNarrative`` before gold-table write.
 - ``AttributeNarrative`` — what the gold writer persists. Wraps the
   ``NarrativeResponse`` with generation metadata (prompt version, model
   deployment, run id, timestamp) and inlined fact-check outcome.
@@ -23,7 +25,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from agentic_audit.models.engagement import ControlId, Quarter
 from agentic_audit.models.evidence import AttributeId
@@ -54,6 +56,28 @@ class NarrativeResponse(BaseModel):
     narrative_text: str = Field(min_length=1)
     cited_fields: list[str] = Field(default_factory=list)
     word_count: int = Field(ge=0)
+
+
+class FactCheckResult(BaseModel):
+    """Verdict of ``FactChecker.check()`` on a narrative.
+
+    The invariant ``passed == (len(issues) == 0)`` is enforced — a caller
+    that constructs ``passed=True`` with non-empty issues, or
+    ``passed=False`` with no issues, gets a ``ValidationError``. This
+    forecloses a class of caller bugs where the verdict and the evidence
+    list drift out of sync.
+    """
+
+    passed: bool
+    issues: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _passed_iff_no_issues(self) -> FactCheckResult:
+        if self.passed and self.issues:
+            raise ValueError("passed=True is incompatible with non-empty issues")
+        if not self.passed and not self.issues:
+            raise ValueError("passed=False requires at least one issue")
+        return self
 
 
 class AttributeNarrative(BaseModel):
@@ -92,6 +116,7 @@ class AttributeNarrative(BaseModel):
 
 __all__ = [
     "AttributeNarrative",
+    "FactCheckResult",
     "NarrativeRequest",
     "NarrativeResponse",
 ]
