@@ -104,6 +104,7 @@ module = [
     "mlflow.*",
     "openai.*",
     "openpyxl.*",
+    "rapidfuzz.*",
     "streamlit.*",
     "tenacity.*",
 ]

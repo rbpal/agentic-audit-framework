@@ -102,7 +102,8 @@ class FactChecker:
         """
         if entity in evidence_blob:
             return True
-        return fuzz.partial_ratio(entity, evidence_blob) >= _FUZZ_THRESHOLD
+        score: float = fuzz.partial_ratio(entity, evidence_blob)
+        return score >= _FUZZ_THRESHOLD
 
     @staticmethod
     def _evidence_as_string(evidence: ExtractedEvidence) -> str:
