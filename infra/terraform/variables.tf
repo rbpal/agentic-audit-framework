@@ -64,3 +64,24 @@ variable "openai_model_capacity_tpm" {
   type        = number
   default     = 10
 }
+
+variable "openai_data_plane_user_principal_ids" {
+  description = <<-EOT
+    AAD principal object-IDs that need the `Cognitive Services OpenAI
+    User` role on the OpenAI account — i.e. local-dev developers who
+    run `pytest -m slow tests/integration/test_layer2_generator_e2e.py`
+    against the dev environment. Without this role, their AAD bearer
+    token gets 401 PermissionDenied on the chat completions endpoint.
+
+    Discovered the need during step_05_task_03 cloud step (PR #65); the
+    grant was applied manually first, then brought under Terraform
+    management here. See `modules/openai/variables.tf >
+    data_plane_user_principal_ids` for the full rationale.
+
+    Defaults empty (no grants) — populate per-environment in tfvars.
+
+    Lookup: `az ad signed-in-user show --query id -o tsv`
+  EOT
+  type        = list(string)
+  default     = []
+}

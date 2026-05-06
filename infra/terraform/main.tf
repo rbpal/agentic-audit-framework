@@ -45,13 +45,14 @@ resource "azurerm_resource_group" "app" {
 module "openai" {
   source = "./modules/openai"
 
-  resource_group_name   = azurerm_resource_group.app.name
-  location              = azurerm_resource_group.app.location
-  account_name          = var.openai_account_name
-  custom_subdomain_name = "aoai-aaf-${var.name_suffix}-${var.environment}"
-  model_version         = var.openai_model_version
-  model_capacity_tpm    = var.openai_model_capacity_tpm
-  tags                  = local.common_tags
+  resource_group_name           = azurerm_resource_group.app.name
+  location                      = azurerm_resource_group.app.location
+  account_name                  = var.openai_account_name
+  custom_subdomain_name         = "aoai-aaf-${var.name_suffix}-${var.environment}"
+  model_version                 = var.openai_model_version
+  model_capacity_tpm            = var.openai_model_capacity_tpm
+  data_plane_user_principal_ids = var.openai_data_plane_user_principal_ids
+  tags                          = local.common_tags
 }
 
 module "adls" {
