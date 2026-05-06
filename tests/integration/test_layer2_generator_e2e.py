@@ -35,10 +35,17 @@ gpt-4o pricing). Idempotent — safe to re-run repeatedly.
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 
 import pytest
 
-from agentic_audit.layer2_narrative.generator import NarrativeGenerator
+from agentic_audit.layer2_narrative.generator import WORD_LIMIT, NarrativeGenerator
+from agentic_audit.models.evidence import (
+    AttributeCheck,
+    ExtractedEvidence,
+    SignOff,
+)
+from agentic_audit.models.narrative import AttributeNarrative
 
 pytestmark = pytest.mark.slow
 
@@ -105,3 +112,106 @@ def test_deployment_pinning_matches_env(generator: NarrativeGenerator) -> None:
     Defaults from ``from_env`` are sane for the dev environment."""
     assert generator.deployment == "gpt-4o"
     assert generator.prompt_version == "v1.0"
+
+
+# ---- Full generate() flow (the production path) ------------------------
+
+UTC_TS = datetime(2026, 5, 5, 12, 0, 0, tzinfo=UTC)
+
+
+def _synthetic_dc9_q1_evidence() -> ExtractedEvidence:
+    """Build a deterministic ExtractedEvidence for the live generate()
+    test. Uses DC-9.A (preparer sign-off) — narratable for DC-9, simple
+    enough that the LLM should produce a clean grounded narrative."""
+    attrs = [
+        AttributeCheck(
+            control_id="DC-9",
+            attribute_id="A",
+            status="pass",
+            evidence_cell_refs=["DC-9 Billing!r4c1"],
+            extracted_value="AB — 2026-01-15",
+            notes="preparer signed",
+        ),
+    ] + [
+        AttributeCheck(
+            control_id="DC-9",
+            attribute_id=a,  # type: ignore[arg-type]
+            status="pass",
+            evidence_cell_refs=[f"DC-9 Billing!{a}"],
+            extracted_value=None,
+            notes=None,
+        )
+        for a in ("B", "C", "D", "E", "F")
+    ]
+    return ExtractedEvidence(
+        engagement_id="alpha-pension-fund-2025",
+        control_id="DC-9",
+        quarter="Q1",
+        run_id="LIVE-GENERATE-TEST",
+        extraction_timestamp=UTC_TS,
+        preparer=SignOff(initials="AB", role="preparer", date=UTC_TS),
+        reviewer=SignOff(initials="CD", role="reviewer", date=UTC_TS),
+        attributes=attrs,
+        source_bronze_file_hash="a" * 64,
+        source_path="abfss://bronze@dlsaafrbpaldev.dfs.core.windows.net/corpus/v2/workpapers/dc9_Q1_ref.xlsx",
+    )
+
+
+def test_generate_dc9_attribute_a_produces_grounded_narrative(
+    generator: NarrativeGenerator,
+) -> None:
+    """End-to-end: real prompt template + real evidence → live gpt-4o
+    in JSON mode → parsed AttributeNarrative.
+
+    This is the test that catches prompt-template / JSON-mode
+    integration bugs the mocked unit tests can't see. Specifically
+    verifies:
+
+    1. The v1.0 template renders without leftover ``${}`` placeholders
+       (the runtime guard would not catch this — only a real
+       Template.substitute call does).
+    2. JSON mode + this specific prompt actually returns the expected
+       NarrativeResponse schema (gpt-4o's actual response, not a mock).
+    3. The 150-word constraint is being respected by the LLM (or at
+       least, the word-limit retry primitive is keeping it under).
+    4. AttributeNarrative is assembled with all metadata.
+
+    Cost: ~$0.005 per run (one or two LLM calls, ~50-200 tokens each).
+    """
+    evidence = _synthetic_dc9_q1_evidence()
+
+    narrative = generator.generate("A", evidence, generation_run_id="LIVE-TEST-RUN-001")
+
+    # Type + identity
+    assert isinstance(narrative, AttributeNarrative)
+    assert narrative.engagement_id == "alpha-pension-fund-2025"
+    assert narrative.control_id == "DC-9"
+    assert narrative.attribute_id == "A"
+    assert narrative.quarter == "Q1"
+    assert narrative.generation_run_id == "LIVE-TEST-RUN-001"
+    assert narrative.prompt_version == "v1.0"
+    assert narrative.model_deployment == "gpt-4o"
+
+    # Content sanity
+    assert narrative.narrative_text  # non-empty
+    assert narrative.word_count > 0
+    assert narrative.word_count <= WORD_LIMIT, (
+        f"narrative ran {narrative.word_count} words, over the {WORD_LIMIT} limit; "
+        "word-limit retry primitive should have caught this"
+    )
+    # Default fact-check state — fact_checker (task_05) flips it later
+    assert narrative.fact_check_passed is False
+    assert narrative.fact_check_issues == []
+
+
+def test_generate_dc9_d_rejected_at_runtime_guard_no_llm_call(
+    generator: NarrativeGenerator,
+) -> None:
+    """Sanity: the runtime guard fires BEFORE any live LLM call when
+    a non-narratable attribute is requested. Costs $0 — the test
+    exists to prove the guard works against the actual generator
+    instance (not just a mocked one)."""
+    evidence = _synthetic_dc9_q1_evidence()
+
+    with pytest.raises(ValueError, match="not narratable for 'DC-9'"):
+        generator.generate("D", evidence)
