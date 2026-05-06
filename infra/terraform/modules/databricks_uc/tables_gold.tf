@@ -1,14 +1,17 @@
-# Gold tables (step_03_task_08).
+# Gold tables (step_03_task_08, extended in step_05_task_06).
 #
 # Curated, aggregated, ready for direct consumption by the agent
 # loop, eval harness, dashboards, and partner-review reports.
 #
-# Four tables in audit_dev.gold:
+# Five tables in audit_dev.gold:
 #   - agent_claims    : the agent's pass/fail/inconclusive claims per attribute per quarter
 #                       — defensible because each row has source_evidence_ids tracing back to silver.evidence
 #   - audit_findings  : final findings ready for partner review (severity, recommendation, status)
 #   - eval_outcomes   : eval-suite results comparing actual agent claims vs gold answers
 #   - cost_telemetry  : per-agent-run token spend, latency, model version
+#   - narratives      : Layer 2 LLM-generated grounded narratives + inlined fact-check verdict
+#                       (step_05_task_06). Keyed by (engagement, control, quarter, attribute, prompt_version)
+#                       so prompt A/B versions land as parallel rows, not overwrites.
 
 resource "databricks_sql_table" "gold_agent_claims" {
   catalog_name       = databricks_catalog.this.name
@@ -273,5 +276,91 @@ resource "databricks_sql_table" "gold_cost_telemetry" {
     name    = "completed_at"
     type    = "timestamp"
     comment = "When the agent run finished. Difference vs started_at = wall-clock latency."
+  }
+}
+
+resource "databricks_sql_table" "gold_narratives" {
+  catalog_name       = databricks_catalog.this.name
+  schema_name        = databricks_schema.this["gold"].name
+  name               = "narratives"
+  table_type         = "MANAGED"
+  data_source_format = "DELTA"
+
+  comment = "Layer 2 LLM-generated grounded narratives + inlined fact-check verdict. One row per (engagement, control, quarter, attribute, prompt_version) — prompt versions land as parallel rows, not overwrites, so v1.0 and v1.1 outputs coexist for A/B comparison. Written by GoldNarrativeWriter via MERGE INTO. step_05_task_06."
+
+  # Composite primary key — Delta does not enforce, but the writer's
+  # MERGE INTO matches on these five columns:
+  #   (engagement_id, control_id, quarter, attribute_id, prompt_version)
+  # See privateDocs/step_05_layer2_narrative.md Q17.
+
+  column {
+    name    = "engagement_id"
+    type    = "string"
+    comment = "Engagement identifier — first key column. Multi-tenant scope; never collapse across tenants."
+  }
+  column {
+    name    = "control_id"
+    type    = "string"
+    comment = "SOX control being narrated (e.g., 'DC-2', 'DC-9')."
+  }
+  column {
+    name    = "quarter"
+    type    = "string"
+    comment = "Audit period (e.g., 'Q1', 'Q2'). Same control narrates independently per quarter."
+  }
+  column {
+    name    = "attribute_id"
+    type    = "string"
+    comment = "Sub-attribute within the control (e.g., 'A', 'C', 'D' for DC-2; 'A', 'B', 'C', 'E', 'F' for DC-9). Layer 3 attributes (DC-2.B, DC-9.D) deliberately do NOT appear here."
+  }
+  column {
+    name    = "prompt_version"
+    type    = "string"
+    comment = "Git-pinned prompt template version (e.g., 'v1.0'). Including this in the key means re-running with v1.1 inserts a parallel row instead of overwriting v1.0 — required for A/B comparison and task_08 baseline tracking."
+  }
+  column {
+    name    = "source_evidence_id"
+    type    = "string"
+    comment = "Lineage back to the silver.evidence row that fed NarrativeGenerator.generate(). Natural-key form '{engagement}|{control}|{quarter}|{attribute}'."
+  }
+  column {
+    name    = "narrative_text"
+    type    = "string"
+    comment = "The LLM output verbatim — the auditor-facing 150-word grounded narrative. THE primary artefact of this table."
+  }
+  column {
+    name    = "cited_fields"
+    type    = "array<string>"
+    comment = "LLM self-report of which evidence fields it cited. Distinct from fact_check_issues — this is what the LLM CLAIMS it cited; the fact-checker verifies what it actually cited."
+  }
+  column {
+    name    = "word_count"
+    type    = "int"
+    comment = "Word count of narrative_text. Always <= 150 by post-process contract; pydantic-validated at generation time."
+  }
+  column {
+    name    = "model_deployment"
+    type    = "string"
+    comment = "Azure OpenAI deployment name (e.g., 'gpt-4o'). Pinned per generator instance. Required for SOX reproducibility."
+  }
+  column {
+    name    = "generation_run_id"
+    type    = "string"
+    comment = "Per-call run identifier. Joins to gold.cost_telemetry to answer 'what did this narrative cost to produce?'"
+  }
+  column {
+    name    = "generated_at"
+    type    = "timestamp"
+    comment = "UTC timestamp at LLM call time."
+  }
+  column {
+    name    = "fact_check_passed"
+    type    = "boolean"
+    comment = "FactChecker.check() verdict: true = every numeric and entity in narrative_text appears in source evidence; false = at least one ungrounded token."
+  }
+  column {
+    name    = "fact_check_issues"
+    type    = "array<string>"
+    comment = "When fact_check_passed=false, the human-readable list of ungrounded tokens (e.g., \"numeric not in evidence: '$2,500'\"). Empty array when passed=true."
   }
 }
