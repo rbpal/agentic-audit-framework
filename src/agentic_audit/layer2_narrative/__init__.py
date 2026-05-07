@@ -39,6 +39,7 @@ from agentic_audit.layer2_narrative.silver_reader import (
     SilverEvidenceReader,
     SilverReadError,
 )
+from agentic_audit.layer2_narrative.sweep import iter_narratable_combinations
 
 __all__ = [
     "AZURE_OPENAI_API_VERSION",
@@ -50,5 +51,6 @@ __all__ = [
     "SilverEvidenceReader",
     "SilverReadError",
     "WORD_LIMIT",
+    "iter_narratable_combinations",
     "load_prompt",
 ]
