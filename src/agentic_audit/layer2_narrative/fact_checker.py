@@ -51,6 +51,86 @@ _NUMERIC_RE = re.compile(r"\$\d+(?:[.,]\d+)*|\d+(?:[.,]\d+)*%|\b\d+(?:[.,]\d+)*\
 # regex engine is greedy so "ACME Inc" matches as one entity not two.
 _ENTITY_RE = re.compile(r"\b[A-Z][A-Za-z0-9]*(?:[-\s][A-Z][A-Za-z0-9]*)*\b")
 
+# Sentence-initial common words that the entity regex inevitably
+# matches but are NOT real entities (just standard English
+# capitalised at start of a sentence). The step_05_task_07 sweep
+# revealed these as the dominant false-positive source — every
+# narrative starting with "The reconciliation passed..." or "Notes
+# confirm..." was failing fact-check on tokens like "The", "Notes",
+# "No", "Rows" instead of any real grounding issue. Filtering them
+# pre-check eliminates the false-positive flood without weakening
+# detection of real hallucinations.
+#
+# Keep this list conservative — only common English function words,
+# determiners, and generic nouns observed in actual gpt-4o output.
+# Domain-specific terms (control names, product names, firm names)
+# stay through the filter and ARE checked against evidence.
+_ENTITY_STOPWORDS: frozenset[str] = frozenset(
+    {
+        # Determiners / articles
+        "The",
+        "A",
+        "An",
+        "This",
+        "That",
+        "These",
+        "Those",
+        # Quantifiers / negations
+        "No",
+        "Yes",
+        "All",
+        "None",
+        "Some",
+        "Any",
+        "Each",
+        "Every",
+        # Conjunctions / prepositions (sentence-initial)
+        "And",
+        "Or",
+        "But",
+        "For",
+        "Of",
+        "In",
+        "On",
+        "At",
+        "By",
+        "With",
+        "Without",
+        "From",
+        "To",
+        # Common audit-prose nouns observed in gpt-4o narratives
+        "Notes",
+        "Rows",
+        "Status",
+        "Reconciliation",
+        "Reviewer",
+        "Preparer",
+        "Evidence",
+        "Variance",
+        "Attribute",
+        "Quarter",
+        "Control",
+        "Period",
+        "Sign",
+        "Sign-Off",
+        "Auditor",
+        # Time-of-action words
+        "During",
+        "Before",
+        "After",
+        "When",
+        "While",
+        # Verb-as-sentence-start (rare but observed)
+        "Confirms",
+        "Identifies",
+        "Indicates",
+        "Reflects",
+        "Shows",
+        "Verifies",
+        "Demonstrates",
+    }
+)
+
 # rapidfuzz partial_ratio threshold for entity grounding. Empirically
 # calibrated against the canonical punctuation-mismatch case
 # ("ACME Inc" vs JSON-flattened "ACME, Inc." → score 87.5) and
@@ -87,10 +167,31 @@ class FactChecker:
                 issues.append(f"numeric not in evidence: {numeric!r}")
 
         for entity in _ENTITY_RE.findall(narrative.narrative_text):
-            if not self._entity_grounded(entity, evidence_blob):
-                issues.append(f"entity not in evidence: {entity!r}")
+            cleaned = self._strip_leading_stopwords(entity)
+            if not cleaned:
+                # Entity was only stopwords (e.g. "The", "No"). Skip.
+                continue
+            if not self._entity_grounded(cleaned, evidence_blob):
+                issues.append(f"entity not in evidence: {cleaned!r}")
 
         return FactCheckResult(passed=len(issues) == 0, issues=issues)
+
+    @staticmethod
+    def _strip_leading_stopwords(entity: str) -> str:
+        """Peel sentence-initial stopwords from a captured entity.
+
+        The entity regex greedily matches multi-word capitalised
+        sequences, so "The ACME Inc" comes through as a single token.
+        Naive ``entity in _ENTITY_STOPWORDS`` misses it. This helper
+        splits on whitespace, drops leading tokens that match the
+        stopword list, and returns the remainder joined back. Returns
+        empty string if the entity was *only* stopwords (e.g. "The"
+        alone), which the caller treats as "skip".
+        """
+        tokens = entity.split()
+        while tokens and tokens[0] in _ENTITY_STOPWORDS:
+            tokens.pop(0)
+        return " ".join(tokens)
 
     @staticmethod
     def _entity_grounded(entity: str, evidence_blob: str) -> bool:

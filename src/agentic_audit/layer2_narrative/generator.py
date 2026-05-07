@@ -69,10 +69,16 @@ logger = logging.getLogger(__name__)
 # template's CONSTRAINTS section. Keep these in sync.
 WORD_LIMIT = 150
 
-# Max output tokens for the chat completion. Enough room for ~150 words
-# (English averages ~1.3 tokens/word) plus the JSON wrapper. Slightly
-# generous so the LLM rarely truncates mid-token.
-_MAX_TOKENS = 300
+# Max output tokens for the chat completion. The first task_07 sweep
+# (2026-05-06) revealed 300 was too tight: 5 of 32 combinations hit
+# JSONDecodeError ("Unterminated string") because the model's response
+# was cut off mid-narrative before the closing JSON brace. The narrative
+# itself averages 150 words ≈ 200 tokens, but the JSON envelope plus a
+# multi-element ``cited_fields`` array can push the full response above
+# 300. 500 gives ~250 tokens of headroom — still well below the
+# response-size budget but enough to absorb realistic JSON-mode output
+# variability. Adjust again if a future sweep surfaces fresh truncation.
+_MAX_TOKENS = 500
 
 
 # Pinned API version. Update when the project decides to bump.
@@ -396,22 +402,54 @@ class NarrativeGenerator:
         JSON doesn't match the schema. The pydantic validation is
         load-bearing — if GPT-4o returns extra/missing fields,
         ``NarrativeResponse(**payload)`` raises and the caller can
-        decide whether to retry."""
-        response = self._client.chat.completions.create(
-            model=self._deployment,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_tokens=_MAX_TOKENS,
-            response_format={"type": "json_object"},
-        )
-        content = response.choices[0].message.content
-        if not content:
-            raise ValueError(
-                f"empty response from {self._deployment!r}; finish_reason="
-                f"{response.choices[0].finish_reason!r}"
+        decide whether to retry.
+
+        On ``json.JSONDecodeError``, retries the call once before
+        raising. The first task_07 sweep showed gpt-4o occasionally
+        emits malformed JSON despite ``response_format={"type":
+        "json_object"}`` (subtype: ``"Expecting property name enclosed
+        in double quotes"``). A single retry with the same prompt
+        usually recovers because the failure mode is non-deterministic
+        even at ``temperature=0``. The truncation subtype
+        (``"Unterminated string"``) was the dominant pre-task_08
+        failure and is addressed by the larger ``_MAX_TOKENS``.
+        """
+        for attempt in (1, 2):
+            response = self._client.chat.completions.create(
+                model=self._deployment,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=_MAX_TOKENS,
+                response_format={"type": "json_object"},
             )
-        payload = json.loads(content)
-        return NarrativeResponse(**payload)
+            content = response.choices[0].message.content
+            if not content:
+                raise ValueError(
+                    f"empty response from {self._deployment!r}; "
+                    f"finish_reason="
+                    f"{response.choices[0].finish_reason!r}"
+                )
+            try:
+                payload = json.loads(content)
+            except json.JSONDecodeError as exc:
+                if attempt == 1:
+                    logger.warning(
+                        "malformed JSON from %s on attempt 1 (%s); retrying once",
+                        self._deployment,
+                        exc.msg,
+                    )
+                    continue
+                # Second attempt also failed — raise with the raw
+                # content embedded so the caller can debug without
+                # re-running the LLM.
+                raise ValueError(
+                    f"malformed JSON from {self._deployment!r} on both "
+                    f"attempts: {exc.msg}; raw content[:500]="
+                    f"{content[:500]!r}"
+                ) from exc
+            return NarrativeResponse(**payload)
+        # Unreachable — the loop either returns or raises. Pylint-pacifier.
+        raise RuntimeError("unreachable: _invoke_llm exhausted both attempts without returning")
 
     @staticmethod
     def _source_evidence_id(evidence: ExtractedEvidence, attribute: AttributeId) -> str:

@@ -220,3 +220,64 @@ def test_multiple_issues_all_collected() -> None:
     assert "$9,999" in issues_blob
     assert "Globex" in issues_blob
     assert "FakeCo" in issues_blob
+
+
+# ---------- entity stopword filter (step_05_task_08 calibration) -------
+
+
+def test_sentence_initial_common_words_are_not_flagged_as_entities() -> None:
+    """The first task_07 sweep produced 0/27 pass rate because the
+    entity regex was flagging sentence-initial common words ("The",
+    "Notes", "No", "Rows") as entities not in evidence. After adding
+    the stopword filter, those tokens are skipped and only real
+    domain entities reach the grounding check."""
+    evidence = _evidence_with_notes({"A": "ACME Inc reconciled $1,250 in Q1 with no exceptions."})
+    # Narrative starts every sentence with a stopword and uses several
+    # of the common audit-prose words from the stopword list.
+    narrative = _narrative(
+        "The ACME Inc reconciliation passed. "
+        "Notes confirm $1,250 reconciled. "
+        "No exceptions noted during Q1. "
+        "Reviewer signed off."
+    )
+
+    result = FactChecker().check(narrative, evidence)
+
+    # All real entities ("ACME Inc", "Q1") are grounded; the stopwords
+    # ("The", "Notes", "No", "Reviewer") are filtered out → passed.
+    assert result.passed is True, result.issues
+
+
+def test_stopword_filter_does_not_mask_real_hallucinated_entity() -> None:
+    """Adding stopwords doesn't weaken hallucination detection. A
+    fabricated proper noun ("Globex") is still flagged because it's
+    not in the stopword list."""
+    evidence = _evidence_with_notes({"A": "ACME Inc reconciled $1,250 in Q1 with no exceptions."})
+    narrative = _narrative("The Globex reconciliation passed. Notes confirm $1,250.")
+
+    result = FactChecker().check(narrative, evidence)
+
+    assert result.passed is False
+    # "Globex" should be flagged; "The" and "Notes" should NOT be.
+    issues_blob = " ".join(result.issues)
+    assert "Globex" in issues_blob
+    assert "'The'" not in issues_blob
+    assert "'Notes'" not in issues_blob
+
+
+def test_stopwords_are_case_sensitive_capitalised_only() -> None:
+    """Stopword list contains "The", "No", etc. — capitalised. A
+    lowercase "the" or "no" mid-sentence is filtered by the
+    capitalised-leading regex itself, so this test mostly documents
+    the boundary: only sentence-initial / proper-noun-style
+    capitalisations are touched by the stopword logic."""
+    from agentic_audit.layer2_narrative.fact_checker import _ENTITY_STOPWORDS
+
+    # All entries are capitalised
+    for word in _ENTITY_STOPWORDS:
+        assert word[0].isupper(), word
+    # Some specific load-bearing entries are present (regression guard)
+    assert "The" in _ENTITY_STOPWORDS
+    assert "No" in _ENTITY_STOPWORDS
+    assert "Notes" in _ENTITY_STOPWORDS
+    assert "Rows" in _ENTITY_STOPWORDS

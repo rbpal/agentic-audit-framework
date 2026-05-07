@@ -408,7 +408,13 @@ def test_generate_source_evidence_id_is_natural_key() -> None:
 
 def test_generate_calls_llm_with_json_mode_and_max_tokens() -> None:
     """The chat completion must be called with response_format={
-    type: json_object }, temperature=0, and max_tokens=300."""
+    type: json_object }, temperature=0, and max_tokens=500.
+
+    The 500 limit was raised from 300 in step_05_task_08 after the
+    first task_07 sweep showed 5 of 32 combinations hit ``Unterminated
+    string`` JSONDecodeError because the LLM was running out of
+    tokens before closing the JSON envelope. 500 gives ~250 tokens
+    of headroom over the 150-word narrative + cited_fields array."""
     fake_client = MagicMock()
     fake_client.chat.completions.create.return_value = _build_chat_completion_response("short")
     gen = _make_generator(fake_client)
@@ -418,7 +424,7 @@ def test_generate_calls_llm_with_json_mode_and_max_tokens() -> None:
     kwargs = fake_client.chat.completions.create.call_args.kwargs
     assert kwargs["model"] == "gpt-4o"  # deployment name, not model id
     assert kwargs["temperature"] == 0
-    assert kwargs["max_tokens"] == 300
+    assert kwargs["max_tokens"] == 500
     assert kwargs["response_format"] == {"type": "json_object"}
 
 
@@ -465,9 +471,15 @@ def test_generate_raises_on_empty_response_content() -> None:
         gen.generate("A", _make_evidence(control_id="DC-9"))
 
 
-def test_generate_raises_on_malformed_json_response() -> None:
-    """If JSON mode somehow returns non-JSON, json.loads raises; we let
-    it bubble up rather than silently swallow."""
+def test_generate_retries_once_on_malformed_json_then_raises() -> None:
+    """JSON mode occasionally emits invalid JSON despite the
+    response_format constraint. ``_invoke_llm`` retries once with the
+    same prompt; if the second attempt also fails to parse, raises a
+    ValueError with the raw content embedded for debugging.
+
+    Calibration learnt from the step_05_task_07 sweep — 5 of 32
+    combinations hit JSONDecodeError; one retry recovers the
+    transient subset, the persistent subset gets surfaced loudly."""
     fake_response = MagicMock()
     fake_response.choices = [MagicMock()]
     fake_response.choices[0].message.content = "not JSON at all"
@@ -476,8 +488,33 @@ def test_generate_raises_on_malformed_json_response() -> None:
     fake_client.chat.completions.create.return_value = fake_response
     gen = _make_generator(fake_client)
 
-    with pytest.raises(json.JSONDecodeError):
+    with pytest.raises(ValueError, match="malformed JSON.*both attempts"):
         gen.generate("A", _make_evidence(control_id="DC-9"))
+
+    # Two LLM calls — one initial + one retry
+    assert fake_client.chat.completions.create.call_count == 2
+
+
+def test_generate_recovers_when_json_parses_on_retry() -> None:
+    """If the first attempt returns garbage but the second returns
+    valid JSON, the retry succeeds and the caller never sees an
+    error. Models the realistic non-determinism even at temperature=0."""
+    bad_response = MagicMock()
+    bad_response.choices = [MagicMock()]
+    bad_response.choices[0].message.content = "garbage not JSON"
+    bad_response.choices[0].finish_reason = "stop"
+
+    good_response = _build_chat_completion_response("short narrative ok")
+
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.side_effect = [bad_response, good_response]
+    gen = _make_generator(fake_client)
+
+    result = gen.generate("A", _make_evidence(control_id="DC-9"))
+
+    assert result.narrative_text == "short narrative ok"
+    # Confirms the retry path was actually exercised
+    assert fake_client.chat.completions.create.call_count == 2
 
 
 def test_generate_raises_on_response_missing_required_fields() -> None:
