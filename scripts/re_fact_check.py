@@ -168,9 +168,17 @@ def re_fact_check(
             )
         evidence = silver_cache[cache_key]
 
+        # cited_fields comes back from databricks-sql-connector as a
+        # numpy.ndarray for array<string> columns, NOT a Python list.
+        # Using ``if x:`` truthiness on an ndarray with >1 element raises
+        # ``ValueError: truth value of an array ... is ambiguous``.
+        # Hence the explicit ``is not None`` check; ``list(...)`` then
+        # works on either an ndarray or a Python list.
+        cited_fields_raw = row["cited_fields"]
+        cited_fields = list(cited_fields_raw) if cited_fields_raw is not None else []
         response = NarrativeResponse(
             narrative_text=row["narrative_text"],
-            cited_fields=list(row["cited_fields"]) if row["cited_fields"] else [],
+            cited_fields=cited_fields,
             word_count=row["word_count"],
         )
         verdict = fact_checker.check(response, evidence)
