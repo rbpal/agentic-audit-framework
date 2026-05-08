@@ -270,6 +270,80 @@ def test_re_fact_check_caches_silver_per_triple() -> None:
     assert silver_reader.read.call_count == 2
 
 
+def test_re_fact_check_handles_numpy_ndarray_cited_fields() -> None:
+    """The Databricks SQL connector returns ``array<string>`` columns
+    as ``numpy.ndarray``, not Python lists. The original implementation
+    used ``if row["cited_fields"]`` truthiness check, which raises
+    ``ValueError: truth value of an array ... is ambiguous`` on any
+    ndarray with > 1 element. Regression test: feed an ndarray and
+    confirm the loop completes without crashing.
+    """
+    import numpy as np
+
+    select_rows = [
+        {
+            "control_id": "DC-9",
+            "quarter": "Q1",
+            "attribute_id": "A",
+            "narrative_text": "ACME Inc reconciled $1,250 in Q1.",
+            "cited_fields": np.array(["DC9_WP!A1", "DC9_WP!A2"]),
+            "word_count": 7,
+            "fact_check_passed": False,
+        },
+    ]
+    update_capture: list[tuple[str, dict]] = []
+    factory = _build_conn_factory(select_rows=select_rows, update_capture=update_capture)
+
+    silver_reader = MagicMock()
+    silver_reader.read.return_value = _fake_evidence()
+
+    n_evaluated, _, _ = re_fact_check(
+        engagement_id="alpha-pension-fund-2025",
+        prompt_version="v1.0",
+        silver_reader=silver_reader,
+        fact_checker=FactChecker(),
+        conn_factory=factory,
+        dry_run=True,
+    )
+
+    # If the truthiness bug returns, this raises ValueError before
+    # evaluation completes. Reaching the assertion = no regression.
+    assert n_evaluated == 1
+
+
+def test_re_fact_check_handles_none_cited_fields() -> None:
+    """A NULL ``cited_fields`` column comes back as Python None, not
+    an empty array. Treat it as empty list — don't pass None into
+    NarrativeResponse, which would fail pydantic validation."""
+    select_rows = [
+        {
+            "control_id": "DC-9",
+            "quarter": "Q1",
+            "attribute_id": "A",
+            "narrative_text": "ACME Inc reconciled $1,250 in Q1.",
+            "cited_fields": None,
+            "word_count": 7,
+            "fact_check_passed": False,
+        },
+    ]
+    update_capture: list[tuple[str, dict]] = []
+    factory = _build_conn_factory(select_rows=select_rows, update_capture=update_capture)
+
+    silver_reader = MagicMock()
+    silver_reader.read.return_value = _fake_evidence()
+
+    n_evaluated, _, _ = re_fact_check(
+        engagement_id="alpha-pension-fund-2025",
+        prompt_version="v1.0",
+        silver_reader=silver_reader,
+        fact_checker=FactChecker(),
+        conn_factory=factory,
+        dry_run=True,
+    )
+
+    assert n_evaluated == 1
+
+
 def test_re_fact_check_returns_zero_when_no_rows_match(
     capsys: pytest.CaptureFixture,
 ) -> None:
