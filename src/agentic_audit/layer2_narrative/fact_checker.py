@@ -36,6 +36,7 @@ from rapidfuzz import fuzz
 
 from agentic_audit.models.evidence import ExtractedEvidence
 from agentic_audit.models.narrative import FactCheckResult, NarrativeResponse
+from agentic_audit.observability import traced_function
 
 # Numerics: dollar amounts, percentages, and plain integers/decimals.
 # Three alternatives in priority order so "$1,250" matches as a
@@ -254,6 +255,7 @@ class FactChecker:
     Stateless — instances are cheap; tests construct one per call.
     """
 
+    @traced_function("layer2.fact_checker.check")
     def check(
         self,
         narrative: NarrativeResponse,

@@ -521,3 +521,39 @@ def test_numeric_grounded_passes_dc9_f_actual_silver_json_shape() -> None:
     # Every numeric resolves via the bare-number percent variant;
     # entities (DC-9, Billing, FV) are all in evidence.
     assert result.passed is True, result.issues
+
+
+# ---------- @traced_function decorator on FactChecker.check ------------
+
+
+def test_fact_checker_check_emits_span_start_and_span_end(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``FactChecker.check`` is one of the four Layer-2 entry points
+    that ``step_05_task_09_coverage_tracing`` mandated be wrapped in
+    ``@traced_function``. Verify the decorator is present by asserting
+    the ``span_start`` / ``span_end`` log records emit on the
+    ``agentic_audit.trace`` logger when ``check()`` is invoked.
+
+    The other three entry points (``generate``, ``write_narrative``,
+    ``silver_reader.read``) had this decorator from the start; ``check``
+    was added in task_09 closeout."""
+    import logging
+
+    evidence = _evidence_with_notes({"A": "ACME Inc reconciled $1,250 in Q1 with no exceptions."})
+    narrative = _narrative("ACME Inc reconciled $1,250 during Q1.")
+
+    with caplog.at_level(logging.INFO, logger="agentic_audit.trace"):
+        FactChecker().check(narrative, evidence)
+
+    span_records = [
+        rec
+        for rec in caplog.records
+        if rec.name == "agentic_audit.trace"
+        and getattr(rec, "span", None) == "layer2.fact_checker.check"
+    ]
+    span_messages = {rec.message for rec in span_records}
+    # Both span_start and span_end must fire — proves the decorator
+    # is wrapping the method, not just imported but unused.
+    assert "span_start" in span_messages
+    assert "span_end" in span_messages
