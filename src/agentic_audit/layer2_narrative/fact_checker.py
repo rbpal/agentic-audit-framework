@@ -30,6 +30,7 @@ alternatives (LLM-as-fact-checker, embedding similarity, stdlib
 from __future__ import annotations
 
 import re
+from decimal import Decimal, InvalidOperation
 
 from rapidfuzz import fuzz
 
@@ -151,6 +152,83 @@ _ENTITY_STOPWORDS: frozenset[str] = frozenset(
 _FUZZ_THRESHOLD = 85
 
 
+def _numeric_variants(numeric: str) -> list[str]:
+    """Generate equivalent string representations of a numeric token.
+
+    Surfaced by the first task_07 sweep: DC-9 attribute F narratives
+    consistently flagged ``40.0%``, ``30.0%``, ``100.0%`` as ungrounded
+    even though the silver evidence contained the equivalent decimals
+    ``0.4``, ``0.3``, ``1.0``. The fact-checker's literal-string match
+    couldn't recognise the equivalence; this helper expands a single
+    numeric into the alternative forms a JSON-serialised evidence blob
+    might hold.
+
+    Asymmetric translation:
+
+    - Percent → decimal: ``40.0%`` → ``["0.4", "0"]`` (when whole) or
+      ``75%`` → ``["0.75"]``. The form ``str(float(...))`` matches
+      Python ``json.dumps`` output exactly.
+    - Decimal → percent: ``0.4`` → ``["40%", "40.0%"]``. Only applied
+      to decimals in ``(0, 1]`` — outside that range the
+      decimal-as-percentage equivalence is unsafe.
+
+    Returns an empty list for tokens that don't fit either pattern
+    (dollar amounts, plain integers, decimals > 1, garbage) — those
+    get string-match-only behaviour.
+
+    Uses ``Decimal`` for arithmetic to avoid float precision artefacts
+    (``0.3 * 100`` returns ``30.000000000000004`` in float; via
+    Decimal it returns exactly ``Decimal('30.00')``).
+    """
+    variants: list[str] = []
+
+    if numeric.endswith("%"):
+        bare = numeric[:-1].strip().replace(",", "")
+        try:
+            value = Decimal(bare)
+        except (InvalidOperation, ValueError):
+            return variants
+        decimal_val = value / Decimal("100")
+        # ``str(float(...))`` produces Python's shortest round-trip
+        # representation — exactly what ``json.dumps`` emits for
+        # equivalent floats. ``75%`` → ``"0.75"``, ``40.0%`` → ``"0.4"``.
+        try:
+            float_form = str(float(decimal_val))
+        except (OverflowError, ValueError):
+            return variants
+        variants.append(float_form)
+        # Whole-number form: ``100%`` → ``1`` (in addition to ``1.0``)
+        # so evidence storing whole percents as bare integers matches.
+        if decimal_val == decimal_val.to_integral_value():
+            variants.append(str(int(decimal_val)))
+    elif "$" not in numeric and "%" not in numeric:
+        bare = numeric.replace(",", "")
+        try:
+            value = Decimal(bare)
+        except (InvalidOperation, ValueError):
+            return variants
+        # Only translate small decimals — a bare ``5`` is not
+        # ambiguously ``5%`` (it's just five). The (0, 1] range is the
+        # safe zone where decimal-as-percentage is the natural
+        # auditor-prose expectation.
+        if Decimal("0") < value <= Decimal("1"):
+            percent_decimal = value * Decimal("100")
+            try:
+                percent_float = float(percent_decimal)
+            except (OverflowError, ValueError):
+                return variants
+            if percent_float == int(percent_float):
+                # Whole-percent input: write both ``40%`` and ``40.0%``
+                # forms so either narrative shape matches evidence.
+                variants.append(f"{int(percent_float)}%")
+                variants.append(f"{percent_float:.1f}%")
+            else:
+                # Fractional percent — canonical form only
+                variants.append(f"{percent_float}%")
+
+    return variants
+
+
 class FactChecker:
     """Deterministic post-generation verifier. Extracts numerics and
     entities from a narrative; checks each appears in the evidence
@@ -173,7 +251,7 @@ class FactChecker:
         issues: list[str] = []
 
         for numeric in _NUMERIC_RE.findall(narrative.narrative_text):
-            if numeric not in evidence_blob:
+            if not self._numeric_grounded(numeric, evidence_blob):
                 issues.append(f"numeric not in evidence: {numeric!r}")
 
         for entity in _ENTITY_RE.findall(narrative.narrative_text):
@@ -185,6 +263,40 @@ class FactChecker:
                 issues.append(f"entity not in evidence: {cleaned!r}")
 
         return FactCheckResult(passed=len(issues) == 0, issues=issues)
+
+    @staticmethod
+    def _numeric_grounded(numeric: str, evidence_blob: str) -> bool:
+        """Verify a numeric is in evidence, allowing for equivalent
+        representations.
+
+        The first task_07 sweep revealed that LLM narratives express
+        decimals as percentages for human readability (e.g. silver
+        stores ``effective_rate = 0.40``, narrative writes ``40.0%``)
+        and our literal-string matcher couldn't equate the two. Direct
+        string-match is tried first (cheap); equivalent forms are
+        generated only when that misses.
+
+        Asymmetric: numerics with a ``%`` suffix get decimal
+        equivalents tried; small decimals (0 < x ≤ 1) get percent
+        equivalents tried. Dollar amounts and integer counts are NOT
+        translated — there's no canonical equivalence to apply, and
+        false-equating $-amounts to bare numerics would mask real
+        hallucinations.
+
+        Variants use a regex with negative-lookaround anchors
+        (``(?<!\\d)variant(?!\\d)``) so that, e.g., narrative ``40%``
+        → variant ``0.4`` does NOT falsely match evidence ``0.45``,
+        but DOES match evidence ending with a sentence period like
+        ``"rate 0.4."``. We block adjacent digits only — adjacent
+        dots (sentence punctuation, JSON delimiters) are fine.
+        """
+        if numeric in evidence_blob:
+            return True
+        for variant in _numeric_variants(numeric):
+            pattern = r"(?<!\d)" + re.escape(variant) + r"(?!\d)"
+            if re.search(pattern, evidence_blob):
+                return True
+        return False
 
     @staticmethod
     def _strip_leading_stopwords(entity: str) -> str:
