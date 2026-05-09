@@ -323,3 +323,131 @@ def test_other_timezone_qualifiers_are_also_filtered() -> None:
 
     for tz_code in ("UTC", "GMT", "EST", "PST"):
         assert tz_code in _ENTITY_STOPWORDS, tz_code
+
+
+# ---------- numeric percent ↔ decimal equivalence ----------------------
+
+
+def test_numeric_variants_percent_to_decimal() -> None:
+    """A percent in the narrative should expand to its decimal form
+    so a JSON-serialised evidence blob with the equivalent decimal
+    value satisfies grounding. Surfaced by the first task_07 sweep:
+    DC-9 attribute F narratives all flagged ``40.0%``, ``30.0%``,
+    ``100.0%`` because evidence stored ``0.4``, ``0.3``, ``1.0``."""
+    from agentic_audit.layer2_narrative.fact_checker import _numeric_variants
+
+    assert _numeric_variants("40.0%") == ["0.4"]
+    assert _numeric_variants("30.0%") == ["0.3"]
+    # 100% → both "1.0" and "1" so evidence storing whole percents as
+    # bare integers also matches
+    assert _numeric_variants("100.0%") == ["1.0", "1"]
+    # Non-round percents preserve precision via Python's repr
+    assert _numeric_variants("75%") == ["0.75"]
+    assert _numeric_variants("12.5%") == ["0.125"]
+
+
+def test_numeric_variants_decimal_to_percent() -> None:
+    """Reverse direction: a small decimal in the narrative should
+    expand to its percent form. Only applied to (0, 1] range —
+    outside that, decimal-as-percentage is unsafe."""
+    from agentic_audit.layer2_narrative.fact_checker import _numeric_variants
+
+    # Whole percent: both "40%" and "40.0%" forms emitted
+    assert _numeric_variants("0.4") == ["40%", "40.0%"]
+    assert _numeric_variants("1.0") == ["100%", "100.0%"]
+    # Trailing-zero forms canonicalise via Decimal
+    assert _numeric_variants("0.40") == ["40%", "40.0%"]
+    # Fractional percent: canonical form only
+    assert _numeric_variants("0.75") == ["75%", "75.0%"]
+
+
+def test_numeric_variants_no_translation_for_dollar_or_integer_or_large_decimal() -> None:
+    """Dollar amounts, plain integers, and decimals > 1 don't get
+    phantom translations. False-equating ``$5`` to ``5%`` would mask
+    real hallucinations."""
+    from agentic_audit.layer2_narrative.fact_checker import _numeric_variants
+
+    assert _numeric_variants("$2,500") == []
+    assert _numeric_variants("150") == []
+    assert _numeric_variants("5") == []
+    # Decimal > 1 — narrative ``1.5`` is not safely equivalent to
+    # ``150%`` (could be rate, count, or anything)
+    assert _numeric_variants("1.5") == []
+
+
+def test_numeric_variants_handles_garbage_input() -> None:
+    """Bad input shouldn't crash — return empty list and let the
+    direct-string-match fallback handle it."""
+    from agentic_audit.layer2_narrative.fact_checker import _numeric_variants
+
+    assert _numeric_variants("abc%") == []
+    assert _numeric_variants("12.34.56") == []
+
+
+def test_numeric_grounded_via_decimal_equivalence_passes_dc9_f_pattern() -> None:
+    """End-to-end on the DC-9 attribute F failure pattern: narrative
+    cites multiple percents, evidence stores the equivalent decimals.
+    After the percent/decimal calibration, all four numerics in this
+    pattern resolve to PASS."""
+    evidence = _evidence_with_notes(
+        {
+            "F": (
+                "DC-9 Billing!r26c2 contains rate 0.4. "
+                "DC-9 Billing!r27c2 contains rate 0.3. "
+                "DC-9 Billing!r28c2 contains rate 1.0."
+            )
+        }
+    )
+    narrative = _narrative(
+        "The attribute check for DC-9 attribute F was conducted using "
+        "evidence from cells DC-9 Billing!r26c2, DC-9 Billing!r27c2, "
+        "and DC-9 Billing!r28c2. The extracted values for effective "
+        "percentages were 40.0%, 30.0%, and 100.0%."
+    )
+
+    result = FactChecker().check(narrative, evidence)
+
+    # All numerics ground via decimal equivalence; entities like
+    # "DC-9", "Billing" are real and present in evidence.
+    assert result.passed is True, result.issues
+
+
+def test_numeric_grounded_does_not_false_match_via_substring() -> None:
+    """Critical false-positive guard: narrative ``40%`` expands to
+    decimal variant ``0.4``, but evidence storing a *different* value
+    ``0.45`` must NOT be accepted as grounding for ``40%``. The
+    word-boundary regex prevents the substring trap."""
+    evidence = _evidence_with_notes({"A": "DC-9 Billing!r26c2 contains rate 0.45."})
+    narrative = _narrative("DC-9 Billing!r26c2 reflects an effective rate of 40%.")
+
+    result = FactChecker().check(narrative, evidence)
+
+    # 40% should NOT match 0.45 (despite "0.4" being a prefix
+    # substring of "0.45"). The narrative is making a false claim.
+    assert result.passed is False
+    assert any("40%" in issue for issue in result.issues), result.issues
+
+
+def test_numeric_grounded_real_hallucination_still_flagged() -> None:
+    """Adding decimal equivalence doesn't weaken hallucination
+    detection. Narrative claims ``75%``, evidence has decimal ``0.5``
+    (= 50%, not 75%) — should fail."""
+    evidence = _evidence_with_notes({"A": "DC-9 Billing!r26c2 contains rate 0.5."})
+    narrative = _narrative("DC-9 Billing!r26c2 reflects an effective rate of 75%.")
+
+    result = FactChecker().check(narrative, evidence)
+
+    assert result.passed is False
+    assert any("75%" in issue for issue in result.issues), result.issues
+
+
+def test_numeric_grounded_evidence_with_percent_narrative_with_decimal() -> None:
+    """Reverse case: silver stores the percent form (rare but
+    possible if upstream came in that way), narrative writes the
+    decimal. Both should ground."""
+    evidence = _evidence_with_notes({"A": "DC-9 Billing!r26c2 contains rate 40%."})
+    narrative = _narrative("DC-9 Billing!r26c2 reflects an effective rate of 0.4.")
+
+    result = FactChecker().check(narrative, evidence)
+
+    assert result.passed is True, result.issues
