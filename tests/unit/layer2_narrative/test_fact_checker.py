@@ -281,3 +281,45 @@ def test_stopwords_are_case_sensitive_capitalised_only() -> None:
     assert "No" in _ENTITY_STOPWORDS
     assert "Notes" in _ENTITY_STOPWORDS
     assert "Rows" in _ENTITY_STOPWORDS
+
+
+def test_utc_timezone_qualifier_is_not_flagged_as_entity() -> None:
+    """Regression for the second task_08 calibration sweep finding:
+    DC-2 Q2 D and DC-2 Q4 D both failed with the lone issue
+    ``"entity not in evidence: 'UTC'"``. The LLM appended a generic
+    timezone code to a date in the narrative; ``UTC`` survived the
+    entity regex but isn't a domain entity. The fix is to add UTC
+    (and GMT/EST/PST) to the stopword list."""
+    evidence = _evidence_with_notes(
+        {
+            "A": (
+                "ACME Inc reconciled $1,250 in Q2; the variance review "
+                "completed 2025-05-27 and was signed by KL."
+            )
+        }
+    )
+    # Reproduce the narrative shape that flagged 'UTC' in the live sweep:
+    # date with timezone qualifier + DC-2 reference + extracted value.
+    narrative = _narrative(
+        "The attribute check for DC-2, attribute D, in Q2 cited evidence "
+        "from cell reference DC-2 Variance!r17c1. The extracted value "
+        "was 'KL — 2025-05-27 UTC' (see DC-2 Variance!r17c1)."
+    )
+
+    result = FactChecker().check(narrative, evidence)
+
+    # The narrative still mentions DC-2, Q2, KL, 2025-05-27 — all
+    # in evidence. After the UTC stopword fix, no FAIL.
+    assert result.passed is True, result.issues
+
+
+def test_other_timezone_qualifiers_are_also_filtered() -> None:
+    """``GMT``, ``EST``, ``PST`` are added to the stopword list along
+    with ``UTC`` because they are the same class of generic
+    timezone-code-appended-to-a-date pattern. Documents the family
+    so a future LLM that picks a different timezone abbreviation
+    doesn't surprise us."""
+    from agentic_audit.layer2_narrative.fact_checker import _ENTITY_STOPWORDS
+
+    for tz_code in ("UTC", "GMT", "EST", "PST"):
+        assert tz_code in _ENTITY_STOPWORDS, tz_code
