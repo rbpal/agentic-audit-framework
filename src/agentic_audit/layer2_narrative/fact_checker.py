@@ -128,6 +128,16 @@ _ENTITY_STOPWORDS: frozenset[str] = frozenset(
         "Shows",
         "Verifies",
         "Demonstrates",
+        # Generic timezone / unit codes — the LLM sometimes appends
+        # "UTC" to a date for clarity (e.g. "as of 2025-05-27 UTC").
+        # The token is capitalised so it survives the entity regex,
+        # but it's not a domain entity and won't appear in the JSON
+        # evidence blob. Surfaced by the first task_07 calibration
+        # sweep (DC-2 Q2 D and DC-2 Q4 D both flagged 'UTC' alone).
+        "UTC",
+        "GMT",
+        "EST",
+        "PST",
     }
 )
 
