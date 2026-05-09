@@ -189,9 +189,26 @@ def _numeric_variants(numeric: str) -> list[str]:
         except (InvalidOperation, ValueError):
             return variants
         decimal_val = value / Decimal("100")
-        # ``str(float(...))`` produces Python's shortest round-trip
-        # representation — exactly what ``json.dumps`` emits for
-        # equivalent floats. ``75%`` → ``"0.75"``, ``40.0%`` → ``"0.4"``.
+        # Bare-number form: ``40.0%`` → ``"40.0"`` (covers evidence
+        # that stores percent VALUES as numbers, with the unit
+        # semantics implied by the field name — e.g. silver JSON
+        # ``"effective_pcts":[40.0,30.0,30.0]``). This was the dominant
+        # DC-9 F failure pattern after the percent↔decimal fix landed:
+        # the LLM faithfully renders ``effective_pcts`` as ``40.0%``,
+        # but the evidence has ``40.0`` not ``0.4``.
+        try:
+            bare_form = str(float(value))
+        except (OverflowError, ValueError):
+            bare_form = ""
+        if bare_form:
+            variants.append(bare_form)
+        # Whole-number bare form: ``40%`` → ``"40"`` (integer),
+        # complementing ``"40.0"``.
+        if value == value.to_integral_value():
+            variants.append(str(int(value)))
+        # Decimal-equivalent form: ``40.0%`` → ``"0.4"``. ``str(float(...))``
+        # produces Python's shortest round-trip representation —
+        # exactly what ``json.dumps`` emits for equivalent floats.
         try:
             float_form = str(float(decimal_val))
         except (OverflowError, ValueError):
