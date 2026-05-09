@@ -328,22 +328,33 @@ def test_other_timezone_qualifiers_are_also_filtered() -> None:
 # ---------- numeric percent ↔ decimal equivalence ----------------------
 
 
-def test_numeric_variants_percent_to_decimal() -> None:
-    """A percent in the narrative should expand to its decimal form
-    so a JSON-serialised evidence blob with the equivalent decimal
-    value satisfies grounding. Surfaced by the first task_07 sweep:
-    DC-9 attribute F narratives all flagged ``40.0%``, ``30.0%``,
-    ``100.0%`` because evidence stored ``0.4``, ``0.3``, ``1.0``."""
+def test_numeric_variants_percent_input_emits_three_equivalence_classes() -> None:
+    """A percent in the narrative expands into THREE classes of
+    equivalent forms an evidence blob might hold:
+
+    1. Bare-number form (``40.0%`` → ``"40.0"``) — the DC-9 F case
+       where silver stores ``"effective_pcts":[40.0, 30.0, 30.0]``
+       with unit semantics carried by the field name.
+    2. Bare-integer form (``40%`` → ``"40"``) — same as (1) but for
+       evidence storing whole percents as int.
+    3. Decimal-equivalent form (``40.0%`` → ``"0.4"``) — silver
+       stores fraction-of-1, narrative humanises to percent.
+
+    Surfaced empirically by three iterations of the task_07 → task_08
+    calibration sweep."""
     from agentic_audit.layer2_narrative.fact_checker import _numeric_variants
 
-    assert _numeric_variants("40.0%") == ["0.4"]
-    assert _numeric_variants("30.0%") == ["0.3"]
-    # 100% → both "1.0" and "1" so evidence storing whole percents as
-    # bare integers also matches
-    assert _numeric_variants("100.0%") == ["1.0", "1"]
-    # Non-round percents preserve precision via Python's repr
-    assert _numeric_variants("75%") == ["0.75"]
-    assert _numeric_variants("12.5%") == ["0.125"]
+    # DC-9 F shape: bare percent number (with .0) + integer + decimal-eq
+    assert _numeric_variants("40.0%") == ["40.0", "40", "0.4"]
+    assert _numeric_variants("30.0%") == ["30.0", "30", "0.3"]
+    # 100.0% → bare "100.0" + integer "100" + decimal "1.0" + integer "1"
+    assert _numeric_variants("100.0%") == ["100.0", "100", "1.0", "1"]
+    # Whole percent without explicit decimal: same shape
+    assert _numeric_variants("40%") == ["40.0", "40", "0.4"]
+    # Non-round percent: bare-number form (75.0) + bare-integer form (75) + decimal (0.75)
+    assert _numeric_variants("75%") == ["75.0", "75", "0.75"]
+    # Fractional percent: bare "12.5" (no integer form since not whole) + decimal
+    assert _numeric_variants("12.5%") == ["12.5", "0.125"]
 
 
 def test_numeric_variants_decimal_to_percent() -> None:
@@ -450,4 +461,63 @@ def test_numeric_grounded_evidence_with_percent_narrative_with_decimal() -> None
 
     result = FactChecker().check(narrative, evidence)
 
+    assert result.passed is True, result.issues
+
+
+def test_numeric_grounded_passes_dc9_f_actual_silver_json_shape() -> None:
+    """End-to-end regression for the EXACT silver-side JSON shape
+    that surfaced the DC-9 F failure cluster in the live re-fact-check
+    on 2026-05-09. Evidence stores percent VALUES as bare numbers
+    (``"effective_pcts":[40.0, 30.0, 30.0], "total":100.0``); the LLM
+    correctly renders them as ``40.0%, 30.0%, 30.0%, totaling 100.0%``.
+    Without the bare-number percent variant, all four numerics flag
+    as ungrounded — that was the residual 4-FAIL cluster after PRs
+    #71 / #73 / #74."""
+    # Use 2025-02-09 as preparer date so the narrative's date
+    # reference is grounded in evidence (matches the live DC-9 F
+    # gold rows which all show the preparer date in the narrative).
+    preparer_date = datetime(2025, 2, 9, 12, 0, 0, tzinfo=UTC)
+    attrs = [
+        AttributeCheck(
+            control_id="DC-9",
+            attribute_id=attr_id,  # type: ignore[arg-type]
+            status="pass",
+            evidence_cell_refs=(
+                ["DC-9 Billing!r26c2", "DC-9 Billing!r27c2", "DC-9 Billing!r28c2"]
+                if attr_id == "F"
+                else [f"DC9_WP!{attr_id}1"]
+            ),
+            extracted_value=(
+                {"effective_pcts": [40.0, 30.0, 30.0], "total": 100.0}
+                if attr_id == "F"
+                else {"sample": f"val-{attr_id}"}
+            ),
+            notes=None if attr_id == "F" else "placeholder",
+        )
+        for attr_id in ["A", "B", "C", "D", "E", "F"]
+    ]
+    evidence = ExtractedEvidence(
+        engagement_id="alpha-pension-fund-2025",
+        control_id="DC-9",
+        quarter="Q1",
+        run_id="01J0F7M5XQXM2QYAY8X8X8X8X8",
+        extraction_timestamp=UTC_TS,
+        preparer=SignOff(initials="FV", role="preparer", date=preparer_date),
+        reviewer=SignOff(initials="CD", role="reviewer", date=preparer_date),
+        attributes=attrs,
+        source_bronze_file_hash="a" * 64,
+        source_path="/bronze/dc9_Q1_ref.xlsx",
+    )
+    # The actual narrative shape gpt-4o produced for DC-9 F
+    narrative = _narrative(
+        "The attribute check for DC-9, attribute F, in Q1 was prepared "
+        "by FV on 2025-02-09 (see DC-9 Billing!r26c2, DC-9 Billing!r27c2, "
+        "DC-9 Billing!r28c2). The extracted values for effective "
+        "percentages were 40.0%, 30.0%, and 30.0%, totaling 100.0%."
+    )
+
+    result = FactChecker().check(narrative, evidence)
+
+    # Every numeric resolves via the bare-number percent variant;
+    # entities (DC-9, Billing, FV) are all in evidence.
     assert result.passed is True, result.issues
