@@ -17,6 +17,7 @@ change.
 from __future__ import annotations
 
 from agentic_audit.models.evidence import (
+    ATTRIBUTE_DEFINITIONS_PER_CONTROL,
     ATTRIBUTES_PER_CONTROL,
     LAYER3_ATTRIBUTES_PER_CONTROL,
     NARRATABLE_ATTRIBUTES_PER_CONTROL,
@@ -81,3 +82,55 @@ def test_total_narratable_count_equals_32_for_full_sweep() -> None:
     assert dc2_count == 12
     assert dc9_count == 20
     assert dc2_count + dc9_count == 32
+
+
+# ---------- ATTRIBUTE_DEFINITIONS_PER_CONTROL (Step 6 task_04 prep) -------
+#
+# Lifted from generator/engagement_writers/toc.py:32-46 (the canonical
+# strings written into the engagement TOC sheet) into a public model
+# constant. The Step 6 judge reads `ATTRIBUTE_DEFINITIONS_PER_CONTROL[
+# control][attribute]` to build its `attribute_definition` prompt
+# placeholder, so the same canonical text drives both the corpus
+# generation AND the judge. Single source of truth — see hand-off in
+# privateDocs/step_06_eval_harness.md task_03.
+
+
+def test_attribute_definitions_pinned_to_toc_canonical_strings() -> None:
+    """Verbatim from toc.py's _DC2_ATTRIBUTES / _DC9_ATTRIBUTES tuples.
+
+    Any change to these strings is a corpus-vs-judge contract change
+    that must update both the engagement TOC writer AND the judge
+    prompt invocation in lockstep. Pinning here makes that linkage
+    enforceable.
+    """
+    assert ATTRIBUTE_DEFINITIONS_PER_CONTROL == {
+        "DC-2": {
+            "A": "Current-period accrual data loaded completely",
+            "B": "Variances above threshold have recorded explanation",
+            "C": "Explanations are consistent with upstream source",
+            "D": "Reviewer signed off on the variance analysis",
+        },
+        "DC-9": {
+            "A": "Preparer signed off on the Checklist",
+            "B": "Independent reviewer signed off",
+            "C": "Billing formulas tie to underlying supporting schedule",
+            "D": "Billing rate change supported by governing-document amendment",
+            "E": "Asset additions and retirements on the supporting schedule",
+            "F": "Ownership-share percentages match supporting reference file",
+        },
+    }
+
+
+def test_attribute_definitions_cover_every_attribute() -> None:
+    """For every control, every attribute in ATTRIBUTES_PER_CONTROL has
+    a non-empty definition. No gaps, no extras."""
+    for control_id, attributes in ATTRIBUTES_PER_CONTROL.items():
+        defs = ATTRIBUTE_DEFINITIONS_PER_CONTROL[control_id]
+        assert set(defs) == set(attributes), (
+            f"{control_id}: ATTRIBUTE_DEFINITIONS keys {set(defs)} "
+            f"!= ATTRIBUTES_PER_CONTROL {set(attributes)}"
+        )
+        for attr, definition in defs.items():
+            assert definition.strip(), (
+                f"{control_id}.{attr}: definition is empty or whitespace-only"
+            )

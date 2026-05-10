@@ -47,6 +47,31 @@ LAYER3_ATTRIBUTES_PER_CONTROL: dict[str, list[str]] = {
     "DC-9": ["D"],
 }
 
+# Canonical human-readable definition per (control, attribute). These are
+# the strings the engagement TOC writer prints into the
+# ``Description`` column of the ToC sheet AND that the Step 6 judge
+# substitutes into its ``attribute_definition`` prompt placeholder.
+# Single source of truth — keeping the corpus and the judge aligned by
+# construction means a future copy-edit can't drift between them.
+#
+# Lifted from generator/engagement_writers/toc.py:32-46 in step_06_task_04.
+ATTRIBUTE_DEFINITIONS_PER_CONTROL: dict[str, dict[str, str]] = {
+    "DC-2": {
+        "A": "Current-period accrual data loaded completely",
+        "B": "Variances above threshold have recorded explanation",
+        "C": "Explanations are consistent with upstream source",
+        "D": "Reviewer signed off on the variance analysis",
+    },
+    "DC-9": {
+        "A": "Preparer signed off on the Checklist",
+        "B": "Independent reviewer signed off",
+        "C": "Billing formulas tie to underlying supporting schedule",
+        "D": "Billing rate change supported by governing-document amendment",
+        "E": "Asset additions and retirements on the supporting schedule",
+        "F": "Ownership-share percentages match supporting reference file",
+    },
+}
+
 
 class SignOff(BaseModel):
     """Auditor sign-off — preparer or reviewer."""
@@ -114,6 +139,7 @@ class ExtractedEvidence(BaseModel):
 
 __all__ = [
     "ATTRIBUTES_PER_CONTROL",
+    "ATTRIBUTE_DEFINITIONS_PER_CONTROL",
     "LAYER3_ATTRIBUTES_PER_CONTROL",
     "NARRATABLE_ATTRIBUTES_PER_CONTROL",
     "AttributeCheck",

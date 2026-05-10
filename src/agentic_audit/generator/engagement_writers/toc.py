@@ -26,23 +26,20 @@ from agentic_audit.models.engagement import (
     QuarterDefect,
     quarter_control,
 )
+from agentic_audit.models.evidence import ATTRIBUTE_DEFINITIONS_PER_CONTROL
 
 # ── Attribute descriptions (what each tickmark means) ───────────────
+#
+# Sourced from `ATTRIBUTE_DEFINITIONS_PER_CONTROL` so the TOC writer and
+# the Step 6 judge use byte-identical strings. Tuple-of-tuple shape is
+# preserved for the existing `_emit_control_sheet` call sites.
 
-_DC2_ATTRIBUTES: tuple[tuple[str, str], ...] = (
-    ("A", "Current-period accrual data loaded completely"),
-    ("B", "Variances above threshold have recorded explanation"),
-    ("C", "Explanations are consistent with upstream source"),
-    ("D", "Reviewer signed off on the variance analysis"),
+_DC2_ATTRIBUTES: tuple[tuple[str, str], ...] = tuple(
+    ATTRIBUTE_DEFINITIONS_PER_CONTROL["DC-2"].items()
 )
 
-_DC9_ATTRIBUTES: tuple[tuple[str, str], ...] = (
-    ("A", "Preparer signed off on the Checklist"),
-    ("B", "Independent reviewer signed off"),
-    ("C", "Billing formulas tie to underlying supporting schedule"),
-    ("D", "Billing rate change supported by governing-document amendment"),
-    ("E", "Asset additions and retirements on the supporting schedule"),
-    ("F", "Ownership-share percentages match supporting reference file"),
+_DC9_ATTRIBUTES: tuple[tuple[str, str], ...] = tuple(
+    ATTRIBUTE_DEFINITIONS_PER_CONTROL["DC-9"].items()
 )
 
 # ── Defect → failing-attribute mapping ──────────────────────────────
