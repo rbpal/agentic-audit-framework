@@ -25,11 +25,17 @@ design rationale.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from agentic_audit.models.engagement import ControlId, Quarter
+from agentic_audit.models.evidence import AttributeId
+
 JudgeVerdict = Literal["pass", "fail", "uncertain"]
+JudgeStatus = Literal["ok", "parse_failure", "validation_failure", "empty_content"]
+FactCheckVerdict = Literal["pass", "fail"]
 
 
 class JudgeResponse(BaseModel):
@@ -63,7 +69,52 @@ class JudgeResponse(BaseModel):
         return self
 
 
+class JudgeOutcomeRow(BaseModel):
+    """One row destined for ``audit_dev.gold.judge_outcomes``.
+
+    Composes:
+
+    - the judge's structured verdict (``judge_*`` fields, mirrored from
+      ``JudgeResponse``),
+    - denormalised scope from the narrative being judged
+      (``engagement_id`` / ``control_id`` / ``attribute_id`` /
+      ``quarter`` / ``narrative_run_id`` / ``fact_check_verdict``),
+    - per-sweep state (``judge_run_id``, ``evaluated_at``,
+      ``judge_status``),
+    - the ground-truth verdict from the engagement ToC
+      (``gold_expected_verdict``),
+    - reproducibility pins (``prompt_version``, ``model_deployment``)
+      — the judge's prompt + model, NOT the narrative's. The column
+      documents which judge configuration produced THIS verdict.
+
+    The 16 fields match the Terraform schema in
+    ``infra/terraform/modules/databricks_uc/tables_gold.tf`` 1:1.
+    See ``privateDocs/step_06_eval_harness.md`` task_04 for the full
+    schema rationale.
+    """
+
+    judge_run_id: str = Field(min_length=1)
+    narrative_run_id: str = Field(min_length=1)
+    engagement_id: str = Field(min_length=1)
+    control_id: ControlId
+    attribute_id: AttributeId
+    quarter: Quarter
+    judge_verdict: JudgeVerdict
+    judge_confidence: float = Field(ge=0.0, le=1.0)
+    judge_reasoning: str = Field(min_length=1)
+    cited_evidence_fields: list[str] = Field(default_factory=list)
+    judge_status: JudgeStatus
+    gold_expected_verdict: str = Field(min_length=1)
+    fact_check_verdict: FactCheckVerdict
+    prompt_version: str = Field(min_length=1)
+    model_deployment: str = Field(min_length=1)
+    evaluated_at: datetime
+
+
 __all__ = [
+    "FactCheckVerdict",
+    "JudgeOutcomeRow",
     "JudgeResponse",
+    "JudgeStatus",
     "JudgeVerdict",
 ]

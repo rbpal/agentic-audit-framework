@@ -1,0 +1,265 @@
+"""Unit tests for ``scripts/run_judge_sweep.py``.
+
+The live-warehouse runner is not exercised in CI (no warehouse / Azure
+OpenAI creds); these tests verify the sweep loop wiring with mocked
+judge + writer:
+
+- ``run_sweep`` iterates the injected ``narratives`` once
+- One ``Judge.evaluate`` call per narrative
+- One ``JudgeOutcomesWriter.write_judge_outcome`` call per narrative
+- Per-narrative errors are caught and the sweep continues
+- Summary tuple ``(n_total, verdict_counts, started_at, completed_at)``
+  is returned, with ``verdict_counts`` always carrying the three fixed
+  keys ``pass`` / ``fail`` / ``uncertain``
+
+The first test below is the minimal red — it imports ``run_sweep``
+from the script and exercises the empty-input path. Further tests
+layer on real narratives, verdict aggregation, error handling, and
+the ``_build_cost_telemetry`` / ``main`` plumbing once the orchestrator
+skeleton lands.
+"""
+
+from __future__ import annotations
+
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from unittest.mock import MagicMock
+
+# `scripts/` isn't a package on PYTHONPATH by default; add it explicitly.
+_SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
+sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from run_judge_sweep import (  # type: ignore[import-not-found]  # noqa: E402
+    run_sweep,
+)
+
+from agentic_audit.models.evidence import (  # noqa: E402
+    AttributeCheck,
+    ExtractedEvidence,
+    SignOff,
+)
+from agentic_audit.models.judge import JudgeResponse  # noqa: E402
+from agentic_audit.models.narrative import AttributeNarrative  # noqa: E402
+
+UTC_TS = datetime(2026, 5, 10, 12, 0, 0, tzinfo=UTC)
+
+
+# ---------- fixtures -------------------------------------------------------
+
+
+def _fake_evidence(control_id: str, quarter: str) -> ExtractedEvidence:
+    ids = ["A", "B", "C", "D", "E", "F"] if control_id == "DC-9" else ["A", "B", "C", "D"]
+    attrs = [
+        AttributeCheck(
+            control_id=control_id,  # type: ignore[arg-type]
+            attribute_id=a,  # type: ignore[arg-type]
+            status="pass",
+            evidence_cell_refs=[f"{control_id.replace('-', '')}_WP!{a}1"],
+            extracted_value={"sample": f"val-{a}"},
+            notes=f"check {a}",
+        )
+        for a in ids
+    ]
+    return ExtractedEvidence(
+        engagement_id="alpha-pension-fund-2025",
+        control_id=control_id,  # type: ignore[arg-type]
+        quarter=quarter,  # type: ignore[arg-type]
+        run_id="01J0F7M5XQXM2QYAY8X8X8X8X8",
+        extraction_timestamp=UTC_TS,
+        preparer=SignOff(initials="AB", role="preparer", date=UTC_TS),
+        reviewer=SignOff(initials="CD", role="reviewer", date=UTC_TS),
+        attributes=attrs,
+        source_bronze_file_hash="a" * 64,
+        source_path=f"/bronze/dc{control_id.split('-')[1]}_{quarter}_ref.xlsx",
+    )
+
+
+def _fake_narrative(
+    *,
+    engagement_id: str = "alpha-pension-fund-2025",
+    control_id: str = "DC-9",
+    quarter: str = "Q1",
+    attribute_id: str = "A",
+    fact_check_passed: bool = True,
+) -> AttributeNarrative:
+    return AttributeNarrative(
+        engagement_id=engagement_id,
+        control_id=control_id,  # type: ignore[arg-type]
+        attribute_id=attribute_id,  # type: ignore[arg-type]
+        quarter=quarter,  # type: ignore[arg-type]
+        source_evidence_id=f"{engagement_id}|{control_id}|{quarter}|{attribute_id}",
+        narrative_text=f"Narrative for {control_id}.{attribute_id} {quarter}.",
+        cited_fields=[f"{control_id.replace('-', '')}_WP!{attribute_id}1"],
+        word_count=6,
+        prompt_version="v1.0",
+        model_deployment="gpt-4o",
+        generation_run_id="GEN_RUN_FAKE",
+        generated_at=UTC_TS,
+        fact_check_passed=fact_check_passed,
+        fact_check_issues=[],
+    )
+
+
+# ---------- run_sweep — empty input ----------------------------------------
+
+
+def test_run_sweep_zero_narratives_returns_empty_counts() -> None:
+    """Empty ``narratives`` → no judge calls, no writes, zero counts.
+
+    Started / completed timestamps are still set so the cost-telemetry
+    summary row has a real wall-clock window even on an empty sweep.
+    """
+    silver_reader = MagicMock()
+    judge = MagicMock()
+    writer = MagicMock()
+
+    n_total, verdict_counts, started_at, completed_at = run_sweep(
+        narratives=[],
+        silver_reader=silver_reader,
+        judge=judge,
+        writer=writer,
+        gold_lookup={},
+        judge_run_id="JUDGE_RUN_TEST",
+    )
+
+    assert n_total == 0
+    assert verdict_counts == {"pass": 0, "fail": 0, "uncertain": 0}
+    assert silver_reader.read.call_count == 0
+    assert judge.evaluate.call_count == 0
+    assert writer.write_judge_outcome.call_count == 0
+    assert isinstance(started_at, datetime)
+    assert isinstance(completed_at, datetime)
+    assert completed_at >= started_at
+
+
+# ---------- run_sweep — single narrative happy path ------------------------
+
+
+def test_run_sweep_single_narrative_calls_silver_judge_and_writer() -> None:
+    """One narrative → one silver read, one Judge.evaluate, one
+    writer.write_judge_outcome. Verdict 'pass' increments
+    verdict_counts['pass'] by 1.
+
+    Pins the per-row contract: judge receives the narrative + evidence +
+    gold_expected_verdict (from gold_lookup) + attribute_definition
+    (formatted from ATTRIBUTE_DEFINITIONS_PER_CONTROL). Writer receives
+    one outcome row.
+    """
+    narrative = _fake_narrative(control_id="DC-9", quarter="Q1", attribute_id="A")
+
+    silver_reader = MagicMock()
+    silver_reader.read.return_value = _fake_evidence("DC-9", "Q1")
+
+    judge = MagicMock()
+    judge.prompt_version = "judge_v1.0"
+    judge.deployment = "gpt-4o"
+    judge.evaluate.return_value = JudgeResponse(
+        verdict="pass",
+        confidence=0.9,
+        reasoning="Evidence supports the claim.",
+        cited_evidence_fields=["DC9_WP!A1"],
+    )
+
+    writer = MagicMock()
+    gold_lookup = {("DC-9", "Q1", "A"): "pass"}
+
+    n_total, counts, _, _ = run_sweep(
+        narratives=[narrative],
+        silver_reader=silver_reader,
+        judge=judge,
+        writer=writer,
+        gold_lookup=gold_lookup,
+        judge_run_id="JUDGE_RUN_TEST",
+    )
+
+    assert n_total == 1
+    assert counts == {"pass": 1, "fail": 0, "uncertain": 0}
+
+    silver_reader.read.assert_called_once_with("alpha-pension-fund-2025", "DC-9", "Q1")
+
+    judge.evaluate.assert_called_once()
+    kwargs = judge.evaluate.call_args.kwargs
+    assert kwargs["gold_expected_verdict"] == "pass"
+    assert kwargs["attribute_definition"] == ("DC-9.A — Preparer signed off on the Checklist")
+
+    writer.write_judge_outcome.assert_called_once()
+
+
+# ---------- run_sweep — writer row shape -----------------------------------
+
+
+def test_run_sweep_writer_receives_full_judge_outcome_row() -> None:
+    """Writer arg pins all 16 columns of ``gold.judge_outcomes``.
+
+    Three pieces of denormalised state are folded into each row:
+
+    1. **From the narrative** — engagement_id, control_id, attribute_id,
+       quarter, narrative_run_id (= narrative.generation_run_id),
+       fact_check_verdict (translated from narrative.fact_check_passed
+       bool: True→"pass", False→"fail").
+    2. **From the judge** — judge_verdict, judge_confidence,
+       judge_reasoning, cited_evidence_fields, plus the judge's own
+       prompt_version and model_deployment (NOT the narrative's; the
+       column documents which judge prompt + model produced THIS
+       verdict).
+    3. **From the sweep** — judge_run_id (constant per sweep),
+       evaluated_at (UTC at judge call return time), judge_status
+       ("ok" for a happy-path verdict).
+    4. **From the gold lookup** — gold_expected_verdict.
+    """
+    narrative = _fake_narrative(
+        control_id="DC-9", quarter="Q1", attribute_id="A", fact_check_passed=False
+    )
+
+    silver_reader = MagicMock()
+    silver_reader.read.return_value = _fake_evidence("DC-9", "Q1")
+
+    judge = MagicMock()
+    judge.prompt_version = "judge_v1.0"
+    judge.deployment = "gpt-4o"
+    judge.evaluate.return_value = JudgeResponse(
+        verdict="fail",
+        confidence=0.85,
+        reasoning="Reviewer cell blank; claim unsupported.",
+        cited_evidence_fields=["DC9_WP!B5"],
+    )
+
+    writer = MagicMock()
+    gold_lookup = {("DC-9", "Q1", "A"): "pass"}  # judge=fail, gold=pass — divergence
+
+    run_sweep(
+        narratives=[narrative],
+        silver_reader=silver_reader,
+        judge=judge,
+        writer=writer,
+        gold_lookup=gold_lookup,
+        judge_run_id="JUDGE_RUN_TEST",
+    )
+
+    writer.write_judge_outcome.assert_called_once()
+    outcome = writer.write_judge_outcome.call_args.args[0]
+
+    # 1. Carried from the narrative
+    assert outcome.engagement_id == "alpha-pension-fund-2025"
+    assert outcome.control_id == "DC-9"
+    assert outcome.attribute_id == "A"
+    assert outcome.quarter == "Q1"
+    assert outcome.narrative_run_id == narrative.generation_run_id
+    assert outcome.fact_check_verdict == "fail"  # narrative.fact_check_passed=False
+
+    # 2. Carried from the judge
+    assert outcome.judge_verdict == "fail"
+    assert outcome.judge_confidence == 0.85
+    assert outcome.judge_reasoning == "Reviewer cell blank; claim unsupported."
+    assert outcome.cited_evidence_fields == ["DC9_WP!B5"]
+    assert outcome.prompt_version == "judge_v1.0"
+    assert outcome.model_deployment == "gpt-4o"
+
+    # 3. Carried from the sweep
+    assert outcome.judge_run_id == "JUDGE_RUN_TEST"
+    assert outcome.judge_status == "ok"
+    assert isinstance(outcome.evaluated_at, datetime)
+
+    # 4. Carried from the gold lookup
+    assert outcome.gold_expected_verdict == "pass"
