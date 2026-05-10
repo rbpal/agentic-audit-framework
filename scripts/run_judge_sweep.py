@@ -21,10 +21,16 @@ orchestrator wiring; the live cloud sweep runs on demand.
 
 from __future__ import annotations
 
+import argparse
+import json
 import logging
+import secrets
+import sys
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from agentic_audit.layer2_narrative.sweep import iter_narratable_combinations
 from agentic_audit.models.evidence import ATTRIBUTE_DEFINITIONS_PER_CONTROL
 from agentic_audit.models.judge import JudgeOutcomeRow
 
@@ -37,6 +43,30 @@ if TYPE_CHECKING:
     from agentic_audit.layer2_narrative.silver_reader import SilverEvidenceReader
     from agentic_audit.models.evidence import ExtractedEvidence
     from agentic_audit.models.narrative import AttributeNarrative
+
+
+def _load_gold_lookup_from_tocs(toc_dir: Path) -> dict[tuple[str, str, str], str]:
+    """Read every ``*.json`` file in ``toc_dir`` and return a flat
+    ``(control_id, quarter, attribute_id) -> verdict`` lookup.
+
+    Each ToC JSON file's ``expected_attribute_results`` dict has keys
+    of the form ``"<control_id>.<attribute_id>"`` (e.g., ``"DC-9.A"``)
+    mapping to ``"pass"`` or ``"fail"``. We unpack those into the flat
+    keyed lookup so the per-row code path is a single dict access
+    instead of a parse + split.
+
+    Called once at sweep start; the resulting dict is passed to
+    ``run_sweep``'s ``gold_lookup`` kwarg.
+    """
+    lookup: dict[tuple[str, str, str], str] = {}
+    for path in sorted(toc_dir.glob("*.json")):
+        data = json.loads(path.read_text())
+        control = data["control_id"]
+        quarter = data["quarter"]
+        for key, verdict in data["expected_attribute_results"].items():
+            attribute = key.split(".", 1)[-1]
+            lookup[(control, quarter, attribute)] = verdict
+    return lookup
 
 
 def _format_attribute_definition(control_id: str, attribute_id: str) -> str:
@@ -150,3 +180,83 @@ def run_sweep(
 
     completed_at = datetime.now(UTC)
     return n_total, verdict_counts, started_at, completed_at
+
+
+def _new_run_id() -> str:
+    """Mint a fresh per-sweep run id. 32 hex chars upper-cased — same
+    shape as the generator's internal ``_new_run_id`` (run_layer2.py)
+    so cost-telemetry joins across sweep families stay clean."""
+    return secrets.token_hex(16).upper()
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Operator entry point for the Step 6 task_04 judge sweep.
+
+    Currently supports ``--dry-run`` only — the live sweep needs a
+    ``GoldNarrativesReader`` (cycle D) to read the existing narratives
+    out of ``audit_dev.gold.narratives``. Without it, this script
+    cannot produce inputs for ``Judge.evaluate(...)``. Calling without
+    ``--dry-run`` prints a clear pointer at the missing piece.
+
+    ``--dry-run`` loads the gold-verdict lookup from
+    ``eval/gold_scenarios/tocs/*.json`` and previews each of the 32
+    narratable combinations with its gold expected verdict. No env-var
+    auth, no LLM calls, no writes.
+    """
+    parser = argparse.ArgumentParser(
+        description=(
+            "Layer 2 judge sweep — evaluate the 32 narratives in "
+            "audit_dev.gold.narratives and write verdicts to "
+            "audit_dev.gold.judge_outcomes for a single engagement."
+        )
+    )
+    parser.add_argument(
+        "--engagement-id",
+        default="alpha-pension-fund-2025",
+        help="Engagement to sweep (default: alpha-pension-fund-2025)",
+    )
+    parser.add_argument(
+        "--toc-dir",
+        default="eval/gold_scenarios/tocs",
+        help=(
+            "Directory containing the per-(control, quarter) ToC JSON "
+            "files (default: eval/gold_scenarios/tocs)."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Print the gold-verdict lookup summary + the 32 combinations "
+            "that would be evaluated; no LLM calls, no writes."
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    toc_dir = Path(args.toc_dir)
+    gold_lookup = _load_gold_lookup_from_tocs(toc_dir)
+
+    if not args.dry_run:
+        # No half-implementations: live sweep wiring is explicit cycle D
+        # work — pointer at the missing piece, non-zero exit.
+        sys.stderr.write(
+            "ERROR: live sweep wiring is not yet implemented "
+            "(GoldNarrativesReader lands in cycle D). "
+            "Use --dry-run to preview the gold lookup + narratable "
+            "combinations.\n"
+        )
+        return 1
+
+    print(f"✓ {len(gold_lookup)} gold-verdict entries loaded from {toc_dir}")
+    print()
+    combinations = list(iter_narratable_combinations(engagement_id=args.engagement_id))
+    for _engagement, control, quarter, attribute in combinations:
+        verdict = gold_lookup[(control, quarter, attribute)]
+        print(f"  {control} {quarter} {attribute}: gold={verdict}")
+    print()
+    print(f"✓ {len(combinations)} combinations would be evaluated")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

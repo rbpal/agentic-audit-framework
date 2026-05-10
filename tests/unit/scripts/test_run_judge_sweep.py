@@ -26,11 +26,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 # `scripts/` isn't a package on PYTHONPATH by default; add it explicitly.
 _SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
 sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from run_judge_sweep import (  # type: ignore[import-not-found]  # noqa: E402
+    _load_gold_lookup_from_tocs,
+    _new_run_id,
+    main,
     run_sweep,
 )
 
@@ -439,3 +444,118 @@ def test_run_sweep_continues_after_per_row_exception() -> None:
     assert counts == {"pass": 1, "fail": 1, "uncertain": 0}
     assert judge.evaluate.call_count == 3  # all three rows were attempted
     assert writer.write_judge_outcome.call_count == 2  # only successes written
+
+
+# ---------- _load_gold_lookup_from_tocs ------------------------------------
+
+
+def test_load_gold_lookup_returns_per_attribute_verdicts() -> None:
+    """Loads the 8 ToC JSONs at ``eval/gold_scenarios/tocs/*.json``
+    and returns a flat dict keyed by ``(control_id, quarter, attribute_id)``
+    with the verdict string from the ToC's
+    ``expected_attribute_results``.
+
+    Total = DC-2 (4 attrs) × 4 quarters + DC-9 (6 attrs) × 4 quarters
+    = 16 + 24 = 40 entries.
+
+    The Step 6 judge sweep uses this lookup to populate
+    ``gold_expected_verdict`` on every ``JudgeOutcomeRow`` without
+    having to re-read JSON files per narrative.
+    """
+    repo_root = Path(__file__).resolve().parents[3]
+    toc_dir = repo_root / "eval" / "gold_scenarios" / "tocs"
+
+    lookup = _load_gold_lookup_from_tocs(toc_dir)
+
+    assert len(lookup) == 40  # 4×4 (DC-2) + 6×4 (DC-9)
+
+    # Pinned verdicts — these are the corpus-baked defects from
+    # step_01_synthetic_data.md §4.3 / §4.6.
+    assert lookup[("DC-9", "Q1", "A")] == "pass"
+    assert lookup[("DC-9", "Q3", "C")] == "fail"  # dc9_figure_mismatch
+    assert lookup[("DC-9", "Q4", "D")] == "fail"  # dc9_rate_change_without_amendment
+    assert lookup[("DC-2", "Q3", "C")] == "fail"  # dc2_variance_explanation_inadequate
+    assert lookup[("DC-2", "Q4", "B")] == "fail"  # dc2_variance_no_explanation
+    assert lookup[("DC-2", "Q1", "A")] == "pass"
+
+
+def test_load_gold_lookup_keys_match_attributes_per_control() -> None:
+    """Every (control, quarter, attribute) combination from
+    ATTRIBUTES_PER_CONTROL appears in the lookup. No gaps."""
+    from agentic_audit.models.evidence import ATTRIBUTES_PER_CONTROL
+
+    repo_root = Path(__file__).resolve().parents[3]
+    toc_dir = repo_root / "eval" / "gold_scenarios" / "tocs"
+
+    lookup = _load_gold_lookup_from_tocs(toc_dir)
+
+    for control_id, attrs in ATTRIBUTES_PER_CONTROL.items():
+        for quarter in ("Q1", "Q2", "Q3", "Q4"):
+            for attr in attrs:
+                assert (control_id, quarter, attr) in lookup, (
+                    f"missing gold verdict for ({control_id}, {quarter}, {attr})"
+                )
+                assert lookup[(control_id, quarter, attr)] in ("pass", "fail")
+
+
+# ---------- _new_run_id ----------------------------------------------------
+
+
+def test_new_run_id_is_32_hex_chars_upper() -> None:
+    """Matches the generator's run id shape from run_layer2.py so
+    cost telemetry queries can join cleanly across sweep families."""
+    run_id = _new_run_id()
+    assert len(run_id) == 32
+    assert run_id == run_id.upper()
+    assert all(c in "0123456789ABCDEF" for c in run_id)
+
+
+def test_new_run_id_is_unique_across_calls() -> None:
+    """Two consecutive calls must not collide — the run id is the
+    primary key joining cost_telemetry to a specific sweep."""
+    ids = {_new_run_id() for _ in range(100)}
+    assert len(ids) == 100
+
+
+# ---------- main --dry-run -------------------------------------------------
+
+
+def test_main_dry_run_prints_lookup_summary_and_returns_zero(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``main(['--dry-run'])`` loads the gold lookup, prints a
+    one-line summary plus a preview of the 32 narratable combinations
+    with their gold expected verdicts, and returns 0. No env-var
+    auth, no LLM calls, no writes."""
+    repo_root = Path(__file__).resolve().parents[3]
+    toc_dir = str(repo_root / "eval" / "gold_scenarios" / "tocs")
+
+    exit_code = main(["--dry-run", "--toc-dir", toc_dir])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "40 gold-verdict entries loaded" in out
+    # 32 narratable combinations previewed — one line each
+    assert "DC-2 Q1 A" in out
+    assert "DC-9 Q3 C" in out
+    # Layer-3 attributes excluded from the preview (B for DC-2, D for DC-9)
+    assert "DC-2 Q1 B" not in out
+    assert "DC-9 Q1 D" not in out
+    assert "32 combinations would be evaluated" in out
+
+
+def test_main_without_dry_run_exits_with_pointer_to_cycle_d(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Live sweep wiring lands in cycle D (GoldNarrativesReader). For
+    now, main() without ``--dry-run`` prints a clear error pointing
+    at the missing piece and returns non-zero. No half-implementations."""
+    repo_root = Path(__file__).resolve().parents[3]
+    toc_dir = str(repo_root / "eval" / "gold_scenarios" / "tocs")
+
+    exit_code = main(["--toc-dir", toc_dir])
+
+    assert exit_code != 0
+    err = capsys.readouterr().err
+    assert "live sweep" in err.lower()
+    assert "cycle D" in err or "GoldNarrativesReader" in err
