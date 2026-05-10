@@ -263,3 +263,179 @@ def test_run_sweep_writer_receives_full_judge_outcome_row() -> None:
 
     # 4. Carried from the gold lookup
     assert outcome.gold_expected_verdict == "pass"
+
+
+# ---------- run_sweep — silver caching invariant ---------------------------
+
+
+def test_run_sweep_two_narratives_same_quarter_cache_silver_read() -> None:
+    """Two narratives under the same ``(engagement, control, quarter)``
+    triple → ``silver_reader.read`` called exactly once, evidence
+    reused on the second call.
+
+    Mirrors the 32-narratives / 8-reads invariant from ``run_layer2.py``.
+    Without caching, a 32-narrative sweep would issue 32 silver reads;
+    with caching, 8 (one per attribute group).
+    """
+    n1 = _fake_narrative(control_id="DC-9", quarter="Q1", attribute_id="A")
+    n2 = _fake_narrative(control_id="DC-9", quarter="Q1", attribute_id="B")
+
+    silver_reader = MagicMock()
+    silver_reader.read.return_value = _fake_evidence("DC-9", "Q1")
+
+    judge = MagicMock()
+    judge.prompt_version = "judge_v1.0"
+    judge.deployment = "gpt-4o"
+    judge.evaluate.return_value = JudgeResponse(
+        verdict="pass",
+        confidence=0.9,
+        reasoning="ok",
+        cited_evidence_fields=["DC9_WP!A1"],
+    )
+
+    writer = MagicMock()
+    gold_lookup = {
+        ("DC-9", "Q1", "A"): "pass",
+        ("DC-9", "Q1", "B"): "pass",
+    }
+
+    n_total, _, _, _ = run_sweep(
+        narratives=[n1, n2],
+        silver_reader=silver_reader,
+        judge=judge,
+        writer=writer,
+        gold_lookup=gold_lookup,
+        judge_run_id="JUDGE_RUN_TEST",
+    )
+
+    assert n_total == 2
+    silver_reader.read.assert_called_once_with("alpha-pension-fund-2025", "DC-9", "Q1")
+    assert judge.evaluate.call_count == 2
+    assert writer.write_judge_outcome.call_count == 2
+
+
+# ---------- run_sweep — verdict aggregation across pass/fail/uncertain -----
+
+
+def test_run_sweep_aggregates_three_verdicts_into_counts() -> None:
+    """Three narratives, one of each verdict → counts split 1/1/1.
+
+    Pins the invariant that ``verdict_counts`` carries the THREE keys
+    pass/fail/uncertain and is incremented by exactly one per row,
+    regardless of which verdict the judge returns.
+    """
+    narratives = [
+        _fake_narrative(control_id="DC-9", quarter="Q1", attribute_id="A"),
+        _fake_narrative(control_id="DC-9", quarter="Q1", attribute_id="B"),
+        _fake_narrative(control_id="DC-9", quarter="Q1", attribute_id="C"),
+    ]
+
+    silver_reader = MagicMock()
+    silver_reader.read.return_value = _fake_evidence("DC-9", "Q1")
+
+    judge = MagicMock()
+    judge.prompt_version = "judge_v1.0"
+    judge.deployment = "gpt-4o"
+    judge.evaluate.side_effect = [
+        JudgeResponse(
+            verdict="pass",
+            confidence=0.9,
+            reasoning="ok",
+            cited_evidence_fields=["X"],
+        ),
+        JudgeResponse(
+            verdict="fail",
+            confidence=0.85,
+            reasoning="bad",
+            cited_evidence_fields=["Y"],
+        ),
+        JudgeResponse(
+            verdict="uncertain",
+            confidence=0.3,
+            reasoning="evidence is silent on this point",
+            cited_evidence_fields=[],  # uncertain exempt from Decision Rule 1
+        ),
+    ]
+
+    writer = MagicMock()
+    gold_lookup = {
+        ("DC-9", "Q1", "A"): "pass",
+        ("DC-9", "Q1", "B"): "pass",
+        ("DC-9", "Q1", "C"): "pass",
+    }
+
+    n_total, counts, _, _ = run_sweep(
+        narratives=narratives,
+        silver_reader=silver_reader,
+        judge=judge,
+        writer=writer,
+        gold_lookup=gold_lookup,
+        judge_run_id="JUDGE_RUN_TEST",
+    )
+
+    assert n_total == 3
+    assert counts == {"pass": 1, "fail": 1, "uncertain": 1}
+    assert writer.write_judge_outcome.call_count == 3
+
+
+# ---------- run_sweep — per-row error handling -----------------------------
+
+
+def test_run_sweep_continues_after_per_row_exception() -> None:
+    """A judge exception on one row does NOT kill the sweep.
+
+    The failed row is not counted in ``n_total``, not written to the
+    writer, and not added to ``verdict_counts``. The sweep continues
+    to subsequent rows. The eval harness is observability, not a
+    control-flow gate (task_03 design rationale).
+
+    Two of three narratives succeed; the middle one raises.
+    """
+    narratives = [
+        _fake_narrative(control_id="DC-9", quarter="Q1", attribute_id="A"),
+        _fake_narrative(control_id="DC-9", quarter="Q1", attribute_id="B"),
+        _fake_narrative(control_id="DC-9", quarter="Q1", attribute_id="C"),
+    ]
+
+    silver_reader = MagicMock()
+    silver_reader.read.return_value = _fake_evidence("DC-9", "Q1")
+
+    judge = MagicMock()
+    judge.prompt_version = "judge_v1.0"
+    judge.deployment = "gpt-4o"
+    judge.evaluate.side_effect = [
+        JudgeResponse(
+            verdict="pass",
+            confidence=0.9,
+            reasoning="ok",
+            cited_evidence_fields=["X"],
+        ),
+        RuntimeError("simulated transient auth / network failure"),
+        JudgeResponse(
+            verdict="fail",
+            confidence=0.8,
+            reasoning="bad",
+            cited_evidence_fields=["Y"],
+        ),
+    ]
+
+    writer = MagicMock()
+    gold_lookup = {
+        ("DC-9", "Q1", "A"): "pass",
+        ("DC-9", "Q1", "B"): "pass",
+        ("DC-9", "Q1", "C"): "fail",
+    }
+
+    n_total, counts, _, _ = run_sweep(
+        narratives=narratives,
+        silver_reader=silver_reader,
+        judge=judge,
+        writer=writer,
+        gold_lookup=gold_lookup,
+        judge_run_id="JUDGE_RUN_TEST",
+    )
+
+    assert n_total == 2  # not 3 — the failed row is not counted
+    assert counts == {"pass": 1, "fail": 1, "uncertain": 0}
+    assert judge.evaluate.call_count == 3  # all three rows were attempted
+    assert writer.write_judge_outcome.call_count == 2  # only successes written
