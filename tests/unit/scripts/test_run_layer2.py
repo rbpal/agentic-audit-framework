@@ -25,6 +25,7 @@ _SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
 sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from run_layer2 import (  # type: ignore[import-not-found]  # noqa: E402
+    _build_cost_telemetry,
     main,
     run_sweep,
 )
@@ -37,6 +38,10 @@ from agentic_audit.models.evidence import (  # noqa: E402
 from agentic_audit.models.narrative import (  # noqa: E402
     AttributeNarrative,
     FactCheckResult,
+)
+from agentic_audit.models.telemetry import (  # noqa: E402
+    CallUsage,
+    UsageRecorder,
 )
 
 UTC_TS = datetime(2026, 5, 6, 12, 0, 0, tzinfo=UTC)
@@ -120,7 +125,7 @@ def test_run_sweep_full_engagement_writes_32_rows(capsys: pytest.CaptureFixture)
 
     gold_writer = MagicMock()
 
-    n_total, n_passed = run_sweep(
+    n_total, n_passed, _started_at, _completed_at = run_sweep(
         engagement_id="alpha-pension-fund-2025",
         prompt_version="v1.0",
         silver_reader=silver_reader,
@@ -167,7 +172,7 @@ def test_run_sweep_propagates_fact_check_to_written_record() -> None:
 
     gold_writer = MagicMock()
 
-    _n_total, n_passed = run_sweep(
+    _n_total, n_passed, _started_at, _completed_at = run_sweep(
         engagement_id="alpha-pension-fund-2025",
         prompt_version="v1.0",
         silver_reader=silver_reader,
@@ -221,7 +226,7 @@ def test_run_sweep_continues_on_single_combination_failure() -> None:
 
     gold_writer = MagicMock()
 
-    n_total, n_passed = run_sweep(
+    n_total, n_passed, _started_at, _completed_at = run_sweep(
         engagement_id="alpha-pension-fund-2025",
         prompt_version="v1.0",
         silver_reader=silver_reader,
@@ -270,3 +275,98 @@ def test_main_dry_run_respects_engagement_arg(
     assert "bravo-2026" in captured.out
     # And the default engagement should NOT appear
     assert "alpha-pension-fund-2025" not in captured.out
+
+
+# ---------- run_sweep — timing window (cost telemetry follow-up #1) -------
+
+
+def test_run_sweep_returns_started_and_completed_timestamps_in_order() -> None:
+    """The sweep must return started_at <= completed_at; the caller
+    derives latency_ms from this window."""
+    silver_reader = MagicMock()
+    silver_reader.read.side_effect = lambda eng, c, q: _fake_evidence(c, q)
+
+    generator = MagicMock()
+    generator.generate.side_effect = lambda attribute, evidence, *, generation_run_id: (
+        _fake_narrative(
+            engagement_id=evidence.engagement_id,
+            control_id=evidence.control_id,
+            quarter=evidence.quarter,
+            attribute_id=attribute,
+            generation_run_id=generation_run_id,
+        )
+    )
+
+    fact_checker = MagicMock()
+    fact_checker.check.return_value = FactCheckResult(passed=True, issues=[])
+    gold_writer = MagicMock()
+
+    _, _, started_at, completed_at = run_sweep(
+        engagement_id="alpha-pension-fund-2025",
+        prompt_version="v1.0",
+        silver_reader=silver_reader,
+        generator=generator,
+        fact_checker=fact_checker,
+        gold_writer=gold_writer,
+        generation_run_id="RUN_TEST",
+    )
+
+    assert started_at <= completed_at
+    # Both timestamps must be tz-aware UTC (CostTelemetry needs aware datetimes).
+    assert started_at.tzinfo is not None
+    assert completed_at.tzinfo is not None
+
+
+# ---------- _build_cost_telemetry helper -----------------------------------
+
+
+def test_build_cost_telemetry_known_deployment_computes_cost_usd() -> None:
+    """For the gpt-4o deployment (in MODEL_PRICING_USD_PER_1K), the
+    helper must populate cost_usd from the running totals."""
+    recorder = UsageRecorder()
+    recorder.record(CallUsage(prompt_tokens=10_000, completion_tokens=4_000))
+    started = UTC_TS
+    completed = datetime(2026, 5, 6, 12, 2, 0, tzinfo=UTC)  # +2 minutes
+
+    telemetry = _build_cost_telemetry(
+        agent_run_id="RUN_KNOWN",
+        recorder=recorder,
+        deployment="gpt-4o",
+        started_at=started,
+        completed_at=completed,
+    )
+
+    assert telemetry.agent_run_id == "RUN_KNOWN"
+    assert telemetry.input_tokens == 10_000
+    assert telemetry.output_tokens == 4_000
+    assert telemetry.total_tokens == 14_000
+    assert telemetry.latency_ms == 120_000
+    # gpt-4o: 10k * 0.0025/1k + 4k * 0.0100/1k = 0.025 + 0.040 = 0.065
+    assert telemetry.cost_usd == pytest.approx(0.065)
+    assert telemetry.model_version == "gpt-4o"
+
+
+def test_build_cost_telemetry_unknown_deployment_yields_none_cost(caplog) -> None:
+    """An unknown deployment → cost_usd is None and a WARN is logged
+    so the operator notices the price-table gap."""
+    import logging
+
+    recorder = UsageRecorder()
+    recorder.record(CallUsage(prompt_tokens=100, completion_tokens=50))
+
+    with caplog.at_level(logging.WARNING):
+        telemetry = _build_cost_telemetry(
+            agent_run_id="RUN_UNKNOWN",
+            recorder=recorder,
+            deployment="gpt-7-future",
+            started_at=UTC_TS,
+            completed_at=UTC_TS,
+        )
+
+    assert telemetry.cost_usd is None
+    # Token + latency data still persisted — a NULL cost is better than a dropped row.
+    assert telemetry.total_tokens == 150
+    assert telemetry.latency_ms == 0
+    # WARN message must name the deployment so the operator knows what to fix.
+    warn_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("gpt-7-future" in m for m in warn_messages)

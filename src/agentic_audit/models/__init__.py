@@ -32,14 +32,24 @@ from agentic_audit.models.evidence import (
     SignOff,
     SignOffRole,
 )
+from agentic_audit.models.telemetry import (
+    MODEL_PRICING_USD_PER_1K,
+    CallUsage,
+    CostTelemetry,
+    UsageRecorder,
+    estimate_cost_usd,
+)
 
 __all__ = [
     "ATTRIBUTES_PER_CONTROL",
+    "MODEL_PRICING_USD_PER_1K",
     "AttributeCheck",
     "AttributeId",
     "AttributeResult",
+    "CallUsage",
     "CheckStatus",
     "ControlId",
+    "CostTelemetry",
     "EngagementGoldAnswer",
     "EngagementSpec",
     "ExtractedEvidence",
@@ -49,9 +59,11 @@ __all__ = [
     "QuarterDefect",
     "SignOff",
     "SignOffRole",
+    "UsageRecorder",
     "build_all_gold_answers",
     "build_quarter_gold_answer",
     "engagement_gold_answer_to_json",
+    "estimate_cost_usd",
     "load_engagement",
     "load_engagement_gold_answer",
     "quarter_control",

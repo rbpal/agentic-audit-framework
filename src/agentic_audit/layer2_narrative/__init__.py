@@ -21,6 +21,10 @@ versioned in git — no MLflow dependency. ``load_prompt(version)``
 resolves a version string (e.g. ``"v1.0"``) to a filename.
 """
 
+from agentic_audit.layer2_narrative.cost_writer import (
+    GOLD_COST_TELEMETRY_TABLE,
+    CostTelemetryWriter,
+)
 from agentic_audit.layer2_narrative.fact_checker import FactChecker
 from agentic_audit.layer2_narrative.generator import (
     AZURE_OPENAI_API_VERSION,
@@ -43,7 +47,9 @@ from agentic_audit.layer2_narrative.sweep import iter_narratable_combinations
 
 __all__ = [
     "AZURE_OPENAI_API_VERSION",
+    "GOLD_COST_TELEMETRY_TABLE",
     "GOLD_NARRATIVES_TABLE",
+    "CostTelemetryWriter",
     "FactChecker",
     "GoldNarrativeWriter",
     "NarrativeGenerator",
