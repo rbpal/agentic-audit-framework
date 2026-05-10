@@ -32,6 +32,10 @@ from agentic_audit.models.evidence import (
     SignOff,
     SignOffRole,
 )
+from agentic_audit.models.judge import (
+    JudgeResponse,
+    JudgeVerdict,
+)
 from agentic_audit.models.telemetry import (
     MODEL_PRICING_USD_PER_1K,
     CallUsage,
@@ -54,6 +58,8 @@ __all__ = [
     "EngagementSpec",
     "ExtractedEvidence",
     "FinalVerdict",
+    "JudgeResponse",
+    "JudgeVerdict",
     "Quarter",
     "QuarterControlSpec",
     "QuarterDefect",

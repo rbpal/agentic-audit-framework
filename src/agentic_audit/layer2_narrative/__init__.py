@@ -35,6 +35,7 @@ from agentic_audit.layer2_narrative.gold_writer import (
     GOLD_NARRATIVES_TABLE,
     GoldNarrativeWriter,
 )
+from agentic_audit.layer2_narrative.judge import Judge
 from agentic_audit.layer2_narrative.prompt_loader import (
     PROMPTS_DIR,
     load_prompt,
@@ -52,6 +53,7 @@ __all__ = [
     "CostTelemetryWriter",
     "FactChecker",
     "GoldNarrativeWriter",
+    "Judge",
     "NarrativeGenerator",
     "PROMPTS_DIR",
     "SilverEvidenceReader",
