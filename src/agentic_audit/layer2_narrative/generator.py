@@ -57,6 +57,7 @@ from agentic_audit.models.narrative import (
     NarrativeRequest,
     NarrativeResponse,
 )
+from agentic_audit.models.telemetry import CallUsage, UsageRecorder
 from agentic_audit.observability import traced_function
 
 if TYPE_CHECKING:
@@ -149,6 +150,7 @@ class NarrativeGenerator:
         prompt_version: str,
         client: AzureOpenAI | None = None,
         api_version: str = AZURE_OPENAI_API_VERSION,
+        usage_recorder: UsageRecorder | None = None,
     ) -> None:
         """Build a generator pinned to a specific deployment + prompt version.
 
@@ -157,6 +159,14 @@ class NarrativeGenerator:
         ``_build_azure_openai_client``. Pinning the prompt version at
         init time means every narrative produced by this instance carries
         the same version — eval-vs-prompt correlation stays clean.
+
+        ``usage_recorder`` (optional) accumulates per-LLM-call token
+        spend across every ``generate(...)`` invocation on this
+        instance. Hand the same recorder to one ``NarrativeGenerator``
+        per sweep; read its ``snapshot()`` at sweep end to build the
+        cost-telemetry row. Default ``None`` skips recording entirely
+        (no overhead, no test-mock burden) — only the sweep driver
+        opts in.
         """
         self._endpoint = endpoint
         self._deployment = deployment
@@ -166,6 +176,7 @@ class NarrativeGenerator:
             if client is not None
             else _build_azure_openai_client(endpoint=endpoint, api_version=api_version)
         )
+        self._usage_recorder = usage_recorder
 
     @classmethod
     def from_env(
@@ -174,6 +185,7 @@ class NarrativeGenerator:
         deployment: str = "gpt-4o",
         prompt_version: str = "v1.0",
         endpoint_env_var: str = "AZURE_OPENAI_ENDPOINT",
+        usage_recorder: UsageRecorder | None = None,
     ) -> NarrativeGenerator:
         """Build from environment variable for the endpoint.
 
@@ -193,7 +205,12 @@ class NarrativeGenerator:
                 "differs from the Cognitive Services account name "
                 "('aoai-aaf-dev') — use the subdomain URL here."
             )
-        return cls(endpoint=endpoint, deployment=deployment, prompt_version=prompt_version)
+        return cls(
+            endpoint=endpoint,
+            deployment=deployment,
+            prompt_version=prompt_version,
+            usage_recorder=usage_recorder,
+        )
 
     @property
     def deployment(self) -> str:
@@ -261,6 +278,12 @@ class NarrativeGenerator:
         the same id across N ``generate`` calls produces a coherent
         cohort (one row in ``audit_dev.gold.cost_telemetry`` summarises
         the whole sweep).
+
+        If a ``UsageRecorder`` was passed at construction time, every
+        billed LLM call inside this method (1 or 2 calls — the
+        word-limit retry can fire) is recorded on it. The sweep driver
+        reads the recorder's snapshot at sweep end to produce the
+        cost-telemetry row.
         """
         narratable = NARRATABLE_ATTRIBUTES_PER_CONTROL[evidence.control_id]
         if attribute not in narratable:
@@ -422,6 +445,7 @@ class NarrativeGenerator:
                 max_tokens=_MAX_TOKENS,
                 response_format={"type": "json_object"},
             )
+            self._record_usage_if_present(response)
             content = response.choices[0].message.content
             if not content:
                 raise ValueError(
@@ -450,6 +474,37 @@ class NarrativeGenerator:
             return NarrativeResponse(**payload)
         # Unreachable — the loop either returns or raises. Pylint-pacifier.
         raise RuntimeError("unreachable: _invoke_llm exhausted both attempts without returning")
+
+    def _record_usage_if_present(self, response: Any) -> None:
+        """Record per-call token usage on the recorder if one is wired.
+
+        Recording happens after every billed API call, regardless of
+        whether the response body parses successfully — token usage is
+        what the cloud meters, and a malformed-JSON response was still
+        a billed call. Skipped silently when no recorder is wired (the
+        default for unit tests, integration tests, and ad-hoc REPL use).
+
+        ``response.usage`` may be ``None`` for some streaming-mode
+        responses, but JSON-mode chat completions always populate it.
+        Defensive against a missing field anyway: any AttributeError
+        from accessing the OpenAI SDK shape silently degrades to "no
+        record" rather than crashing the sweep.
+        """
+        if self._usage_recorder is None:
+            return
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        prompt_tokens = getattr(usage, "prompt_tokens", None)
+        completion_tokens = getattr(usage, "completion_tokens", None)
+        if prompt_tokens is None or completion_tokens is None:
+            return
+        self._usage_recorder.record(
+            CallUsage(
+                prompt_tokens=int(prompt_tokens),
+                completion_tokens=int(completion_tokens),
+            )
+        )
 
     @staticmethod
     def _source_evidence_id(evidence: ExtractedEvidence, attribute: AttributeId) -> str:

@@ -673,3 +673,153 @@ def test_new_run_id_is_uppercase_hex() -> None:
     run_id = NarrativeGenerator._new_run_id()
     assert run_id == run_id.upper()
     int(run_id, 16)  # parses as hex; raises if not
+
+
+# ---------- usage_recorder wiring (follow-up #1: cost telemetry) ---------
+
+
+def _build_chat_completion_with_usage(
+    narrative_text: str,
+    *,
+    prompt_tokens: int,
+    completion_tokens: int,
+) -> MagicMock:
+    """Mock an OpenAI ChatCompletion that includes a populated
+    ``usage`` block. Real Azure OpenAI JSON-mode responses always
+    populate ``response.usage``; the recorder relies on that."""
+    response = _build_chat_completion_response(narrative_text)
+    response.usage = MagicMock()
+    response.usage.prompt_tokens = prompt_tokens
+    response.usage.completion_tokens = completion_tokens
+    response.usage.total_tokens = prompt_tokens + completion_tokens
+    return response
+
+
+def test_generate_records_usage_when_recorder_wired() -> None:
+    """When a UsageRecorder is passed to the constructor, every LLM
+    call's prompt + completion tokens accumulate on the recorder."""
+    from agentic_audit.models.telemetry import UsageRecorder
+
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = _build_chat_completion_with_usage(
+        "short narrative ok",
+        prompt_tokens=120,
+        completion_tokens=40,
+    )
+    recorder = UsageRecorder()
+    gen = NarrativeGenerator(
+        endpoint="x",
+        deployment="gpt-4o",
+        prompt_version="v1.0",
+        client=fake_client,
+        usage_recorder=recorder,
+    )
+
+    gen.generate("A", _make_evidence(control_id="DC-9"))
+
+    assert recorder.n_calls == 1
+    assert recorder.prompt_tokens == 120
+    assert recorder.completion_tokens == 40
+    assert recorder.total_tokens == 160
+
+
+def test_generate_accumulates_usage_across_word_limit_retry() -> None:
+    """When the first response exceeds the word limit and a retry
+    fires, BOTH calls' tokens must accumulate. The retry was a billed
+    LLM call too."""
+    from agentic_audit.models.telemetry import UsageRecorder
+
+    long_text = " ".join(f"w{i}" for i in range(200))  # over 150 words
+    short_text = " ".join(f"w{i}" for i in range(50))  # under 150 words
+
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.side_effect = [
+        _build_chat_completion_with_usage(long_text, prompt_tokens=100, completion_tokens=300),
+        _build_chat_completion_with_usage(short_text, prompt_tokens=120, completion_tokens=80),
+    ]
+    recorder = UsageRecorder()
+    gen = NarrativeGenerator(
+        endpoint="x",
+        deployment="gpt-4o",
+        prompt_version="v1.0",
+        client=fake_client,
+        usage_recorder=recorder,
+    )
+
+    gen.generate("A", _make_evidence(control_id="DC-9"))
+
+    assert recorder.n_calls == 2
+    assert recorder.prompt_tokens == 220
+    assert recorder.completion_tokens == 380
+
+
+def test_generate_accumulates_usage_across_two_generate_calls() -> None:
+    """Sweep-grain recording: one recorder, multiple generate() calls,
+    counts sum across the cohort."""
+    from agentic_audit.models.telemetry import UsageRecorder
+
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = _build_chat_completion_with_usage(
+        "short ok",
+        prompt_tokens=50,
+        completion_tokens=20,
+    )
+    recorder = UsageRecorder()
+    gen = NarrativeGenerator(
+        endpoint="x",
+        deployment="gpt-4o",
+        prompt_version="v1.0",
+        client=fake_client,
+        usage_recorder=recorder,
+    )
+
+    gen.generate("A", _make_evidence(control_id="DC-9"))
+    gen.generate("C", _make_evidence(control_id="DC-9"))
+
+    assert recorder.n_calls == 2
+    assert recorder.prompt_tokens == 100
+    assert recorder.completion_tokens == 40
+
+
+def test_generate_default_no_recorder_does_not_break_existing_call_sites() -> None:
+    """Backwards-compatibility pin: omitting usage_recorder must not
+    raise, even when the mocked response has no ``usage`` attribute
+    (which is how every pre-follow-up test mock is shaped)."""
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = _build_chat_completion_response("short ok")
+    gen = NarrativeGenerator(
+        endpoint="x",
+        deployment="gpt-4o",
+        prompt_version="v1.0",
+        client=fake_client,
+    )
+
+    # No exception, no recorder side-effect — just a normal generate.
+    result = gen.generate("A", _make_evidence(control_id="DC-9"))
+    assert result.narrative_text == "short ok"
+
+
+def test_generate_handles_response_without_usage_block_gracefully() -> None:
+    """Defensive: if a future SDK / streaming-mode change drops the
+    usage block, the recorder skips that call rather than crashing
+    the whole sweep."""
+    from agentic_audit.models.telemetry import UsageRecorder
+
+    fake_response = _build_chat_completion_response("short ok")
+    fake_response.usage = None  # simulate missing usage block
+
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = fake_response
+    recorder = UsageRecorder()
+    gen = NarrativeGenerator(
+        endpoint="x",
+        deployment="gpt-4o",
+        prompt_version="v1.0",
+        client=fake_client,
+        usage_recorder=recorder,
+    )
+
+    # Should NOT raise; should NOT record anything.
+    gen.generate("A", _make_evidence(control_id="DC-9"))
+    assert recorder.n_calls == 0
+    assert recorder.total_tokens == 0
