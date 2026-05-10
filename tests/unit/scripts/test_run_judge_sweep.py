@@ -544,18 +544,97 @@ def test_main_dry_run_prints_lookup_summary_and_returns_zero(
     assert "32 combinations would be evaluated" in out
 
 
-def test_main_without_dry_run_exits_with_pointer_to_cycle_d(
-    capsys: pytest.CaptureFixture[str],
+def test_main_live_without_databricks_creds_exits_with_clear_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Live sweep wiring lands in cycle D (GoldNarrativesReader). For
-    now, main() without ``--dry-run`` prints a clear error pointing
-    at the missing piece and returns non-zero. No half-implementations."""
+    """Live mode (no ``--dry-run``) requires DATABRICKS_HOST /
+    DATABRICKS_TOKEN / DATABRICKS_SQL_WAREHOUSE_ID. Missing any of
+    these triggers a clear stderr error + ``SystemExit(2)`` before
+    any LLM or warehouse calls are attempted."""
+    # Clear creds so the factory builder sees nothing
+    for var in ("DATABRICKS_HOST", "DATABRICKS_TOKEN", "DATABRICKS_SQL_WAREHOUSE_ID"):
+        monkeypatch.delenv(var, raising=False)
+
+    repo_root = Path(__file__).resolve().parents[3]
+    toc_dir = str(repo_root / "eval" / "gold_scenarios" / "tocs")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--toc-dir", toc_dir])
+
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    assert "DATABRICKS_HOST" in err
+    assert "missing env vars" in err.lower()
+
+
+def test_main_live_runs_full_pipeline_with_mocked_components(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Smoke test of the live wiring: when all external collaborators
+    are mocked, ``main()`` orchestrates them end-to-end. Verifies that:
+
+    - GoldNarrativesReader.iter_narratives is called with the engagement_id
+    - run_sweep is invoked with one narrative -> one judge call + writer call
+    - CostTelemetryWriter.write_cost_telemetry receives one row
+    - stdout summary shows the expected verdict counts and cost numbers
+    - Exit code is 0
+
+    This is the integration boundary for cycle D — proves the live
+    pipeline wires up correctly without needing live cloud creds.
+    """
+    import run_judge_sweep as mod  # type: ignore[import-not-found]
+
+    # Build a complete narrative-shaped fixture
+    fake_narrative = _fake_narrative(control_id="DC-9", quarter="Q1", attribute_id="A")
+
+    fake_factory = MagicMock()
+    mock_judge = MagicMock()
+    mock_judge.deployment = "gpt-4o"
+    mock_judge.prompt_version = "judge_v1.0"
+    mock_judge.evaluate.return_value = JudgeResponse(
+        verdict="pass",
+        confidence=0.9,
+        reasoning="evidence supports the claim",
+        cited_evidence_fields=["DC9_WP!A1"],
+    )
+
+    mock_narratives_reader = MagicMock()
+    mock_narratives_reader.iter_narratives.return_value = [fake_narrative]
+
+    mock_silver_reader = MagicMock()
+    mock_silver_reader.read.return_value = _fake_evidence("DC-9", "Q1")
+
+    mock_writer = MagicMock()
+    mock_cost_writer = MagicMock()
+
+    # Replace factory + constructors with mocks
+    monkeypatch.setattr(mod, "_build_warehouse_conn_factory", lambda: fake_factory)
+    monkeypatch.setattr(
+        mod.Judge,
+        "from_env",
+        classmethod(lambda cls, *, usage_recorder=None: mock_judge),
+    )
+    monkeypatch.setattr(mod, "SilverEvidenceReader", lambda *_a, **_kw: mock_silver_reader)
+    monkeypatch.setattr(mod, "GoldNarrativesReader", lambda *_a, **_kw: mock_narratives_reader)
+    monkeypatch.setattr(mod, "JudgeOutcomesWriter", lambda *_a, **_kw: mock_writer)
+    monkeypatch.setattr(mod, "CostTelemetryWriter", lambda *_a, **_kw: mock_cost_writer)
+
     repo_root = Path(__file__).resolve().parents[3]
     toc_dir = str(repo_root / "eval" / "gold_scenarios" / "tocs")
 
     exit_code = main(["--toc-dir", toc_dir])
 
-    assert exit_code != 0
-    err = capsys.readouterr().err
-    assert "live sweep" in err.lower()
-    assert "cycle D" in err or "GoldNarrativesReader" in err
+    assert exit_code == 0
+
+    # Wiring assertions
+    mock_narratives_reader.iter_narratives.assert_called_once_with("alpha-pension-fund-2025")
+    mock_judge.evaluate.assert_called_once()
+    mock_writer.write_judge_outcome.assert_called_once()
+    mock_cost_writer.write_cost_telemetry.assert_called_once()
+
+    # Summary print
+    out = capsys.readouterr().out
+    assert "1 narratives evaluated" in out
+    assert "pass/fail/uncertain = 1/0/0" in out
+    assert "cost telemetry" in out
+    assert "LLM calls" in out

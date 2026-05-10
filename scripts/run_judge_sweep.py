@@ -24,23 +24,33 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import secrets
 import sys
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from agentic_audit.layer2_narrative.cost_writer import CostTelemetryWriter
+from agentic_audit.layer2_narrative.gold_narratives_reader import GoldNarrativesReader
+from agentic_audit.layer2_narrative.judge import Judge
+from agentic_audit.layer2_narrative.judge_outcomes_writer import JudgeOutcomesWriter
+from agentic_audit.layer2_narrative.silver_reader import SilverEvidenceReader
 from agentic_audit.layer2_narrative.sweep import iter_narratable_combinations
 from agentic_audit.models.evidence import ATTRIBUTE_DEFINITIONS_PER_CONTROL
 from agentic_audit.models.judge import JudgeOutcomeRow
+from agentic_audit.models.telemetry import (
+    CostTelemetry,
+    UsageRecorder,
+    estimate_cost_usd,
+)
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Generator, Iterable
 
-    from agentic_audit.layer2_narrative.judge import Judge
-    from agentic_audit.layer2_narrative.silver_reader import SilverEvidenceReader
     from agentic_audit.models.evidence import ExtractedEvidence
     from agentic_audit.models.narrative import AttributeNarrative
 
@@ -189,19 +199,111 @@ def _new_run_id() -> str:
     return secrets.token_hex(16).upper()
 
 
+def _build_warehouse_conn_factory() -> Any:
+    """Wire ``databricks.sql.connect`` from env vars. Imported lazily
+    so unit tests (which never call this) don't need the package
+    installed.
+
+    Mirrors ``run_layer2.py._build_warehouse_conn_factory``.
+    """
+    required = ("DATABRICKS_HOST", "DATABRICKS_TOKEN", "DATABRICKS_SQL_WAREHOUSE_ID")
+    missing = [k for k in required if not os.getenv(k)]
+    if missing:
+        sys.stderr.write(
+            f"ERROR: missing env vars: {', '.join(missing)}\n"
+            "       set DATABRICKS_HOST, DATABRICKS_TOKEN, "
+            "DATABRICKS_SQL_WAREHOUSE_ID and re-run.\n"
+        )
+        sys.exit(2)
+
+    from databricks import sql as dbsql  # type: ignore[import-not-found]
+
+    host = os.environ["DATABRICKS_HOST"].removeprefix("https://")
+    http_path = f"/sql/1.0/warehouses/{os.environ['DATABRICKS_SQL_WAREHOUSE_ID']}"
+    token = os.environ["DATABRICKS_TOKEN"]
+
+    @contextmanager
+    def factory() -> Generator[Any, None, None]:
+        conn = dbsql.connect(
+            server_hostname=host,
+            http_path=http_path,
+            access_token=token,
+        )
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    return factory
+
+
+def _build_cost_telemetry(
+    *,
+    judge_run_id: str,
+    recorder: UsageRecorder,
+    deployment: str,
+    started_at: datetime,
+    completed_at: datetime,
+) -> CostTelemetry:
+    """Assemble one ``CostTelemetry`` row from the judge sweep state.
+
+    Mirrors ``run_layer2.py._build_cost_telemetry``. Differences:
+
+    - ``judge_run_id`` is the ``agent_run_id`` column value, so the
+      cost row is identifiable as a judge-sweep row (vs a generator
+      sweep row) when joining ``gold.cost_telemetry`` to the
+      sweep-family table.
+    - ``model_version`` is the judge's deployment name (e.g.
+      ``"gpt-4o"``); snapshot version plumbing is shared
+      tech-debt with run_layer2.
+
+    ``cost_usd`` may be ``None`` if the deployment isn't in
+    ``MODEL_PRICING_USD_PER_1K``; we log WARN so the operator updates
+    the price table.
+    """
+    snapshot = recorder.snapshot()
+    cost_usd = estimate_cost_usd(
+        deployment=deployment,
+        input_tokens=snapshot.prompt_tokens,
+        output_tokens=snapshot.completion_tokens,
+    )
+    if cost_usd is None:
+        logger.warning(
+            "deployment %r not in MODEL_PRICING_USD_PER_1K; "
+            "cost_usd will be NULL in gold.cost_telemetry. "
+            "Add a price row to src/agentic_audit/models/telemetry.py.",
+            deployment,
+        )
+    latency_ms = int((completed_at - started_at).total_seconds() * 1000)
+    return CostTelemetry(
+        agent_run_id=judge_run_id,
+        input_tokens=snapshot.prompt_tokens,
+        output_tokens=snapshot.completion_tokens,
+        total_tokens=snapshot.total_tokens,
+        latency_ms=latency_ms,
+        cost_usd=cost_usd,
+        model_version=deployment,
+        started_at=started_at,
+        completed_at=completed_at,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """Operator entry point for the Step 6 task_04 judge sweep.
-
-    Currently supports ``--dry-run`` only — the live sweep needs a
-    ``GoldNarrativesReader`` (cycle D) to read the existing narratives
-    out of ``audit_dev.gold.narratives``. Without it, this script
-    cannot produce inputs for ``Judge.evaluate(...)``. Calling without
-    ``--dry-run`` prints a clear pointer at the missing piece.
 
     ``--dry-run`` loads the gold-verdict lookup from
     ``eval/gold_scenarios/tocs/*.json`` and previews each of the 32
     narratable combinations with its gold expected verdict. No env-var
     auth, no LLM calls, no writes.
+
+    Live mode (default) wires the full pipeline: warehouse factory
+    from env vars, ``GoldNarrativesReader`` to fetch the 32 narratives
+    from ``audit_dev.gold.narratives``, ``SilverEvidenceReader`` for
+    per-row evidence, ``Judge.from_env`` for the LLM call, and
+    ``JudgeOutcomesWriter`` to insert into
+    ``audit_dev.gold.judge_outcomes``. Emits one cost-telemetry summary
+    row to ``audit_dev.gold.cost_telemetry`` keyed by the fresh
+    ``judge_run_id``.
     """
     parser = argparse.ArgumentParser(
         description=(
@@ -236,25 +338,68 @@ def main(argv: list[str] | None = None) -> int:
     toc_dir = Path(args.toc_dir)
     gold_lookup = _load_gold_lookup_from_tocs(toc_dir)
 
-    if not args.dry_run:
-        # No half-implementations: live sweep wiring is explicit cycle D
-        # work — pointer at the missing piece, non-zero exit.
-        sys.stderr.write(
-            "ERROR: live sweep wiring is not yet implemented "
-            "(GoldNarrativesReader lands in cycle D). "
-            "Use --dry-run to preview the gold lookup + narratable "
-            "combinations.\n"
-        )
-        return 1
+    if args.dry_run:
+        print(f"✓ {len(gold_lookup)} gold-verdict entries loaded from {toc_dir}")
+        print()
+        combinations = list(iter_narratable_combinations(engagement_id=args.engagement_id))
+        for _engagement, control, quarter, attribute in combinations:
+            verdict = gold_lookup[(control, quarter, attribute)]
+            print(f"  {control} {quarter} {attribute}: gold={verdict}")
+        print()
+        print(f"✓ {len(combinations)} combinations would be evaluated")
+        return 0
 
-    print(f"✓ {len(gold_lookup)} gold-verdict entries loaded from {toc_dir}")
+    # Live sweep: env-var auth, full pipeline, cost telemetry write.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    factory = _build_warehouse_conn_factory()
+    silver_reader = SilverEvidenceReader(factory)
+    narratives_reader = GoldNarrativesReader(factory)
+    recorder = UsageRecorder()
+    judge = Judge.from_env(usage_recorder=recorder)
+    writer = JudgeOutcomesWriter(factory)
+    cost_writer = CostTelemetryWriter(factory)
+    run_id = _new_run_id()
+
+    print(
+        f"Judge sweep: engagement={args.engagement_id}, "
+        f"prompt_version=judge_v1.0, judge_run_id={run_id}"
+    )
+    narratives = narratives_reader.iter_narratives(args.engagement_id)
+    n_total, counts, started_at, completed_at = run_sweep(
+        narratives=narratives,
+        silver_reader=silver_reader,
+        judge=judge,
+        writer=writer,
+        gold_lookup=gold_lookup,
+        judge_run_id=run_id,
+    )
+
+    telemetry = _build_cost_telemetry(
+        judge_run_id=run_id,
+        recorder=recorder,
+        deployment=judge.deployment,
+        started_at=started_at,
+        completed_at=completed_at,
+    )
+    cost_writer.write_cost_telemetry(telemetry)
+
     print()
-    combinations = list(iter_narratable_combinations(engagement_id=args.engagement_id))
-    for _engagement, control, quarter, attribute in combinations:
-        verdict = gold_lookup[(control, quarter, attribute)]
-        print(f"  {control} {quarter} {attribute}: gold={verdict}")
-    print()
-    print(f"✓ {len(combinations)} combinations would be evaluated")
+    print(
+        f"✓ {n_total} narratives evaluated; "
+        f"pass/fail/uncertain = "
+        f"{counts['pass']}/{counts['fail']}/{counts['uncertain']}"
+    )
+    print(
+        f"✓ cost telemetry: {recorder.n_calls} LLM calls, "
+        f"{telemetry.input_tokens} prompt + {telemetry.output_tokens} completion = "
+        f"{telemetry.total_tokens} tokens, "
+        f"{telemetry.latency_ms} ms wall-clock, "
+        f"cost_usd={telemetry.cost_usd}"
+    )
     return 0
 
 
