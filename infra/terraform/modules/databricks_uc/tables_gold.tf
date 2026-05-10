@@ -364,3 +364,94 @@ resource "databricks_sql_table" "gold_narratives" {
     comment = "When fact_check_passed=false, the human-readable list of ungrounded tokens (e.g., \"numeric not in evidence: '$2,500'\"). Empty array when passed=true."
   }
 }
+
+resource "databricks_sql_table" "gold_judge_outcomes" {
+  catalog_name       = databricks_catalog.this.name
+  schema_name        = databricks_schema.this["gold"].name
+  name               = "judge_outcomes"
+  table_type         = "MANAGED"
+  data_source_format = "DELTA"
+
+  comment = "Step 6 LLM-as-judge verdicts over Layer 2 narratives. One row per (judge_run_id, narrative_run_id). Distinct from gold.eval_outcomes (which is shaped for Layer-1 deterministic claim/answer comparison) — see privateDocs/step_06_eval_harness.md Design rationale § A. step_06_task_04."
+
+  column {
+    name    = "judge_run_id"
+    type    = "string"
+    comment = "Per-sweep run identifier for the judge sweep itself. Joins to gold.cost_telemetry. Distinct from the Layer-2 generator's agent_run_id and from any Step 7 supervisor run id."
+  }
+  column {
+    name    = "narrative_run_id"
+    type    = "string"
+    comment = "Joins back to gold.narratives.generation_run_id — the narrative this verdict was rendered against."
+  }
+  column {
+    name    = "engagement_id"
+    type    = "string"
+    comment = "Engagement identifier. Denormalised from gold.narratives so Step 7's supervisor can filter by tenant scope without joining."
+  }
+  column {
+    name    = "control_id"
+    type    = "string"
+    comment = "SOX control under judgment (e.g., 'DC-2', 'DC-9'). Denormalised."
+  }
+  column {
+    name    = "attribute_id"
+    type    = "string"
+    comment = "Sub-attribute within the control (A-F). Denormalised."
+  }
+  column {
+    name    = "quarter"
+    type    = "string"
+    comment = "Audit period (e.g., 'Q1'). Denormalised."
+  }
+  column {
+    name    = "judge_verdict"
+    type    = "string"
+    comment = "LLM-as-judge verdict: 'pass' | 'fail' | 'uncertain'. Distinct from fact_check_verdict — judge catches semantic hallucination; FactChecker catches numeric/entity fabrication."
+  }
+  column {
+    name    = "judge_confidence"
+    type    = "double"
+    comment = "Self-reported judge confidence in [0, 1]. Step 7's gate consults (verdict, confidence) jointly."
+  }
+  column {
+    name    = "judge_reasoning"
+    type    = "string"
+    comment = "Human-readable rationale for the verdict. NOT used for control flow — Step 7's gate must not regex this string. Status-vs-fallback distinction lives in judge_status."
+  }
+  column {
+    name    = "cited_evidence_fields"
+    type    = "array<string>"
+    comment = "Evidence fields the judge anchored on. Decision Rule 1: pass/fail must be non-empty; uncertain may be empty. Surfaces in human-reviewer escalation."
+  }
+  column {
+    name    = "judge_status"
+    type    = "string"
+    comment = "Operational status enum: 'ok' (genuine verdict) | 'parse_failure' | 'validation_failure' | 'empty_content' (LLM-side failure routed through the uncertain fallback). Lets the gate distinguish a genuine 'evidence is silent' uncertain from 'the LLM crashed twice.'"
+  }
+  column {
+    name    = "gold_expected_verdict"
+    type    = "string"
+    comment = "Ground-truth expected verdict from eval/gold_scenarios/tocs/*.json → expected_attribute_results['<control>.<attribute>']. Materialised here so 'did we get it right' rollups are a single-table query."
+  }
+  column {
+    name    = "fact_check_verdict"
+    type    = "string"
+    comment = "Denormalised from gold.narratives.fact_check_passed (true→'pass', false→'fail') for divergence queries vs judge_verdict. FactChecker is deterministic, so no 'uncertain' case."
+  }
+  column {
+    name    = "prompt_version"
+    type    = "string"
+    comment = "Git-pinned judge prompt template version (e.g., 'judge_v1.0'). SOX reproducibility — re-running with v1.1 inserts new rows; we never overwrite."
+  }
+  column {
+    name    = "model_deployment"
+    type    = "string"
+    comment = "Azure OpenAI deployment name used by the judge (e.g., 'gpt-4o'). Pinned per Judge instance. Required for SOX reproducibility."
+  }
+  column {
+    name    = "evaluated_at"
+    type    = "timestamp"
+    comment = "UTC timestamp at judge call return time."
+  }
+}
