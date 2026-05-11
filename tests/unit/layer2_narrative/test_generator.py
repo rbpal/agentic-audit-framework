@@ -554,6 +554,39 @@ def test_generate_returns_first_response_when_under_word_limit() -> None:
     assert fake_client.chat.completions.create.call_count == 1
 
 
+def test_generate_mints_unique_narrative_call_id_per_call() -> None:
+    """Step 5 follow-up #5: every ``generate()`` call produces a fresh
+    ``narrative_call_id``, even when the caller shares
+    ``generation_run_id`` across the cohort.
+
+    This is what lets gold.judge_outcomes.narrative_run_id join back to
+    gold.narratives 1:1 instead of producing a sweep-scoped Cartesian
+    product. The composite-key workaround in
+    ``scripts/divergence_summary.sql`` Q2 only exists because
+    historical v1.0 rows lack this column.
+    """
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = _build_chat_completion_response(
+        "Short narrative.", word_count=2
+    )
+    gen = _make_generator(fake_client)
+    shared_gen_id = "SWEEP_RUN_FAKE"
+
+    result_a = gen.generate("A", _make_evidence(control_id="DC-9"), generation_run_id=shared_gen_id)
+    result_b = gen.generate("C", _make_evidence(control_id="DC-9"), generation_run_id=shared_gen_id)
+
+    # sweep-scoped id shared across the cohort
+    assert result_a.generation_run_id == shared_gen_id
+    assert result_b.generation_run_id == shared_gen_id
+    # but per-call ids are distinct and non-None
+    assert result_a.narrative_call_id is not None
+    assert result_b.narrative_call_id is not None
+    assert result_a.narrative_call_id != result_b.narrative_call_id
+    # And distinct from the sweep id too — they share the _new_run_id
+    # mint pattern but should never collide in practice.
+    assert result_a.narrative_call_id != shared_gen_id
+
+
 def test_generate_retries_once_when_first_response_over_limit() -> None:
     """Over-limit on first attempt → retry once with stricter prompt.
     Second response under limit → return that."""

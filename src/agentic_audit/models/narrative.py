@@ -88,7 +88,9 @@ class AttributeNarrative(BaseModel):
     template version (e.g. ``"v1.0"``); ``model_deployment`` is the Azure
     deployment name (``"gpt-4o"``); ``generation_run_id`` ties this
     narrative back to a single sweep invocation in
-    ``audit_dev.gold.cost_telemetry``.
+    ``audit_dev.gold.cost_telemetry``; ``narrative_call_id`` is the
+    per-call ULID that uniquely identifies one ``generate()`` invocation
+    (Step 5 follow-up #5).
 
     ``fact_check_passed`` defaults False so an unchecked narrative is
     safely-conservative; the fact-checker (task_05) flips it after
@@ -108,6 +110,10 @@ class AttributeNarrative(BaseModel):
     prompt_version: str = Field(min_length=1)
     model_deployment: str = Field(min_length=1)
     generation_run_id: str = Field(min_length=1)
+    # Per-call ULID — optional so historical v1.0 rows (written before
+    # the column existed) round-trip cleanly through the reader. New
+    # rows from the generator always populate it.
+    narrative_call_id: str | None = None
     generated_at: datetime
 
     fact_check_passed: bool = False

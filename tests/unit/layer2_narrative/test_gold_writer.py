@@ -179,7 +179,9 @@ def test_build_params_maps_every_field() -> None:
     narrative = _make_narrative()
     params = GoldNarrativeWriter._build_params(narrative)
 
-    # All 14 named parameters present (12 scalar + 2 JSON-serialised arrays)
+    # All 15 named parameters present (13 scalar + 2 JSON-serialised arrays).
+    # narrative_call_id added in Step 5 follow-up #5 — nullable in the
+    # schema, populated by NarrativeGenerator.generate() on new rows.
     expected_keys = {
         "engagement_id",
         "control_id",
@@ -192,6 +194,7 @@ def test_build_params_maps_every_field() -> None:
         "word_count",
         "model_deployment",
         "generation_run_id",
+        "narrative_call_id",
         "generated_at",
         "fact_check_passed",
         "fact_check_issues_json",

@@ -56,12 +56,18 @@ def _make_row(
     word_count: int = 9,
     model_deployment: str = "gpt-4o",
     generation_run_id: str = "GEN_RUN_FAKE",
+    narrative_call_id: str | None = "CALL_FAKE",
     generated_at: datetime = UTC_TS,
     fact_check_passed: bool = True,
     fact_check_issues: list[str] | None = None,
 ) -> tuple:
     """Mirror the column order in the SELECT statement; returned as a
-    tuple because Databricks SQL cursor.fetchall() yields tuples."""
+    tuple because Databricks SQL cursor.fetchall() yields tuples.
+
+    ``narrative_call_id`` defaults to a sentinel for new (v1.1+) rows;
+    pass ``None`` to simulate a historical v1.0 row that pre-dates the
+    column.
+    """
     if cited_fields is None:
         cited_fields = ["DC9_WP!A1"]
     if fact_check_issues is None:
@@ -79,6 +85,7 @@ def _make_row(
         word_count,
         model_deployment,
         generation_run_id,
+        narrative_call_id,
         generated_at,
         fact_check_passed,
         fact_check_issues,
@@ -197,6 +204,28 @@ def test_iter_narratives_materialises_attribute_narrative_from_row(
     assert narrative.generation_run_id == "GEN_RUN_FAKE"
     assert narrative.fact_check_passed is True
     assert narrative.fact_check_issues == []
+    # Step 5 follow-up #5: per-call id round-trips on new rows.
+    assert narrative.narrative_call_id == "CALL_FAKE"
+
+
+def test_iter_narratives_round_trips_null_narrative_call_id_for_v1_0_history(
+    conn_factory_factory,
+) -> None:
+    """Historical v1.0 rows pre-date Step 5 follow-up #5; the schema
+    is nullable so reading them returns ``narrative_call_id=None``.
+    The reader must not raise.
+    """
+    row = _make_row(prompt_version="v1.0", narrative_call_id=None)
+    factory = conn_factory_factory(rows=[row])
+    reader = GoldNarrativesReader(factory)
+
+    narratives = list(reader.iter_narratives("alpha-pension-fund-2025"))
+
+    assert narratives[0].narrative_call_id is None
+    # The sweep-scoped fallback is still populated, so callers that
+    # need *some* identifier (e.g. run_judge_sweep) can degrade
+    # cleanly to generation_run_id.
+    assert narratives[0].generation_run_id == "GEN_RUN_FAKE"
 
 
 def test_iter_narratives_respects_explicit_prompt_version(

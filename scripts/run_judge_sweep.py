@@ -149,7 +149,13 @@ def run_sweep(
 
             outcome = JudgeOutcomeRow(
                 judge_run_id=judge_run_id,
-                narrative_run_id=narrative.generation_run_id,
+                # Prefer the per-call narrative_call_id (Step 5 follow-up #5)
+                # so the join back to gold.narratives is 1:1 instead of the
+                # sweep-scoped Cartesian product. Historical v1.0 rows
+                # carry NULL in narrative_call_id, so fall back to the
+                # sweep-scoped generation_run_id for those — matches the
+                # pre-follow-up behavior.
+                narrative_run_id=narrative.narrative_call_id or narrative.generation_run_id,
                 engagement_id=narrative.engagement_id,
                 control_id=narrative.control_id,
                 attribute_id=narrative.attribute_id,

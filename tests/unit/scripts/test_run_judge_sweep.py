@@ -200,7 +200,9 @@ def test_run_sweep_writer_receives_full_judge_outcome_row() -> None:
     Three pieces of denormalised state are folded into each row:
 
     1. **From the narrative** — engagement_id, control_id, attribute_id,
-       quarter, narrative_run_id (= narrative.generation_run_id),
+       quarter, narrative_run_id (= narrative.narrative_call_id when
+       populated, falling back to narrative.generation_run_id for
+       historical v1.0 rows that pre-date Step 5 follow-up #5),
        fact_check_verdict (translated from narrative.fact_check_passed
        bool: True→"pass", False→"fail").
     2. **From the judge** — judge_verdict, judge_confidence,
@@ -268,6 +270,87 @@ def test_run_sweep_writer_receives_full_judge_outcome_row() -> None:
 
     # 4. Carried from the gold lookup
     assert outcome.gold_expected_verdict == "pass"
+
+
+# ---------- run_sweep — narrative_call_id preference (follow-up #5) --------
+
+
+def test_run_sweep_prefers_narrative_call_id_over_generation_run_id() -> None:
+    """Step 5 follow-up #5: when the narrative carries a per-call
+    ``narrative_call_id``, the judge sweep writes THAT to
+    ``judge_outcomes.narrative_run_id`` — NOT the sweep-scoped
+    ``generation_run_id``.
+
+    This is what collapses the composite-key Cartesian product
+    workaround in ``scripts/divergence_summary.sql`` Q2 down to a
+    single-condition join for v1.1+ sweeps.
+    """
+    narrative = _fake_narrative()
+    # Simulate a v1.1+ row that carries the per-call id
+    narrative_with_call_id = narrative.model_copy(
+        update={"narrative_call_id": "CALL_FAKE_DISTINCT"}
+    )
+    assert narrative_with_call_id.generation_run_id == "GEN_RUN_FAKE"
+    assert narrative_with_call_id.narrative_call_id == "CALL_FAKE_DISTINCT"
+
+    silver_reader = MagicMock()
+    silver_reader.read.return_value = _fake_evidence("DC-9", "Q1")
+    judge = MagicMock()
+    judge.prompt_version = "judge_v1.0"
+    judge.deployment = "gpt-4o"
+    judge.evaluate.return_value = JudgeResponse(
+        verdict="pass", confidence=0.9, reasoning="r", cited_evidence_fields=["x"]
+    )
+    writer = MagicMock()
+
+    run_sweep(
+        narratives=[narrative_with_call_id],
+        silver_reader=silver_reader,
+        judge=judge,
+        writer=writer,
+        gold_lookup={("DC-9", "Q1", "A"): "pass"},
+        judge_run_id="JUDGE_RUN_TEST",
+    )
+
+    outcome = writer.write_judge_outcome.call_args.args[0]
+    assert outcome.narrative_run_id == "CALL_FAKE_DISTINCT"
+
+
+def test_run_sweep_falls_back_to_generation_run_id_when_call_id_null() -> None:
+    """Historical v1.0 rows have ``narrative_call_id=None`` (pre-Step 5
+    follow-up #5). The sweep must fall back to the sweep-scoped
+    ``generation_run_id`` so old narratives round-trip cleanly.
+
+    Without this fallback, re-running the judge against the v1.0
+    baseline would raise (narrative_run_id is a required string in
+    JudgeOutcomeRow).
+    """
+    # _fake_narrative leaves narrative_call_id at the model default (None)
+    narrative = _fake_narrative()
+    assert narrative.narrative_call_id is None
+
+    silver_reader = MagicMock()
+    silver_reader.read.return_value = _fake_evidence("DC-9", "Q1")
+    judge = MagicMock()
+    judge.prompt_version = "judge_v1.0"
+    judge.deployment = "gpt-4o"
+    judge.evaluate.return_value = JudgeResponse(
+        verdict="pass", confidence=0.9, reasoning="r", cited_evidence_fields=["x"]
+    )
+    writer = MagicMock()
+
+    run_sweep(
+        narratives=[narrative],
+        silver_reader=silver_reader,
+        judge=judge,
+        writer=writer,
+        gold_lookup={("DC-9", "Q1", "A"): "pass"},
+        judge_run_id="JUDGE_RUN_TEST",
+    )
+
+    outcome = writer.write_judge_outcome.call_args.args[0]
+    assert outcome.narrative_run_id == narrative.generation_run_id
+    assert outcome.narrative_run_id == "GEN_RUN_FAKE"
 
 
 # ---------- run_sweep — silver caching invariant ---------------------------

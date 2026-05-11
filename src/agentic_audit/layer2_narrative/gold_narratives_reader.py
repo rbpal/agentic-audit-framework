@@ -71,6 +71,7 @@ SELECT engagement_id,
        word_count,
        model_deployment,
        generation_run_id,
+       narrative_call_id,
        generated_at,
        fact_check_passed,
        fact_check_issues
@@ -150,9 +151,10 @@ class GoldNarrativesReader:
             word_count=r[8],
             model_deployment=r[9],
             generation_run_id=r[10],
-            generated_at=r[11],
-            fact_check_passed=r[12],
-            fact_check_issues=list(r[13]) if r[13] is not None else [],
+            narrative_call_id=r[11],
+            generated_at=r[12],
+            fact_check_passed=r[13],
+            fact_check_issues=list(r[14]) if r[14] is not None else [],
         )
 
 
