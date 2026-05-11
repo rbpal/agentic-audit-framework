@@ -316,6 +316,10 @@ class NarrativeGenerator:
             prompt_version=self._prompt_version,
             model_deployment=self._deployment,
             generation_run_id=generation_run_id or self._new_run_id(),
+            # Fresh ULID per call — independent of generation_run_id
+            # (which sweep callers share across the cohort). Lets
+            # gold.judge_outcomes.narrative_run_id join back 1:1.
+            narrative_call_id=self._new_run_id(),
             generated_at=datetime.now(UTC),
         )
 

@@ -67,6 +67,7 @@ USING (
         %(word_count)s             AS word_count,
         %(model_deployment)s       AS model_deployment,
         %(generation_run_id)s      AS generation_run_id,
+        %(narrative_call_id)s      AS narrative_call_id,
         %(generated_at)s           AS generated_at,
         %(fact_check_passed)s      AS fact_check_passed,
         from_json(%(fact_check_issues_json)s, 'array<string>') AS fact_check_issues
@@ -131,6 +132,7 @@ class GoldNarrativeWriter:
             "word_count": narrative.word_count,
             "model_deployment": narrative.model_deployment,
             "generation_run_id": narrative.generation_run_id,
+            "narrative_call_id": narrative.narrative_call_id,
             "generated_at": narrative.generated_at,
             "fact_check_passed": narrative.fact_check_passed,
             "fact_check_issues_json": json.dumps(narrative.fact_check_issues),
