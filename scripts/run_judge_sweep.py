@@ -332,6 +332,17 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--prompt-version",
+        default="v1.0",
+        help=(
+            "Narrative prompt_version to filter gold.narratives on. "
+            "Used by the reader to scope the sweep to one prompt cohort "
+            "(default: v1.0). Pass 'v1.1' to judge the v1.1 re-baseline "
+            "sweep. Does NOT affect the judge prompt itself, which is "
+            "pinned on the Judge instance."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help=(
@@ -372,9 +383,13 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         f"Judge sweep: engagement={args.engagement_id}, "
-        f"prompt_version=judge_v1.0, judge_run_id={run_id}"
+        f"narrative_prompt_version={args.prompt_version}, "
+        f"judge_prompt_version={judge.prompt_version}, "
+        f"judge_run_id={run_id}"
     )
-    narratives = narratives_reader.iter_narratives(args.engagement_id)
+    narratives = narratives_reader.iter_narratives(
+        args.engagement_id, prompt_version=args.prompt_version
+    )
     n_total, counts, started_at, completed_at = run_sweep(
         narratives=narratives,
         silver_reader=silver_reader,

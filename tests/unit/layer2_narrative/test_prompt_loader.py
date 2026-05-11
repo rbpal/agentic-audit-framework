@@ -130,3 +130,73 @@ def test_v1_0_template_specifies_json_output_schema() -> None:
     assert "narrative_text" in text
     assert "cited_fields" in text
     assert "word_count" in text
+
+
+# ---------- v1.1 template (Step 5 follow-up #4) ----------------------------
+
+
+def test_load_prompt_v1_1_returns_non_empty_text() -> None:
+    """v1.1 ships as a sibling to v1.0 — both coexist for A/B comparison.
+    The loader resolves 'v1.1' to 'v1_1.txt' on disk."""
+    text = load_prompt("v1.1")
+    assert text
+    assert len(text) > 100  # not a stub
+
+
+def test_v1_1_template_renders_with_sample_request() -> None:
+    """v1.1 must accept the same 4 placeholders as v1.0 (same callers,
+    same NarrativeRequest model). Anything else would force generator
+    code changes per prompt version — exactly the coupling we avoid.
+    """
+    template = Template(load_prompt("v1.1"))
+    template.substitute(
+        control_id="DC-9",
+        attribute_id="C",
+        quarter="Q3",
+        evidence_json="{}",
+    )  # no KeyError == 4-placeholder contract preserved
+
+
+def test_v1_1_template_specifies_same_json_output_schema_as_v1_0() -> None:
+    """The output JSON schema (narrative_text, cited_fields, word_count)
+    is the NarrativeResponse pydantic contract — must stay byte-identical
+    across prompt versions or the parser breaks."""
+    text = load_prompt("v1.1")
+    assert "narrative_text" in text
+    assert "cited_fields" in text
+    assert "word_count" in text
+
+
+def test_v1_1_template_requires_compact_attribute_identifier_usage() -> None:
+    """Step 5 follow-up #4, fix #1: the v1.1 prompt instructs the model
+    to use the compact dotted identifier ``${control_id}.${attribute_id}``
+    (e.g., 'DC-9.E') and explicitly forbids the 'control ID and attribute
+    X' phrasing that triggered the FactChecker tokenization false
+    positive on DC-9 Q4 E in the v1.0 baseline.
+    """
+    text = load_prompt("v1.1")
+    assert "ATTRIBUTE IDENTIFIER USAGE" in text
+    # The compact form must be named explicitly.
+    assert "${control_id}.${attribute_id}" in text
+    # The forbidden phrasing must be called out (verbatim string match
+    # so anyone diffing v1.0 vs v1.1 sees the constraint).
+    assert "control ID and attribute" in text
+
+
+def test_v1_1_template_qualifies_cross_file_dependent_attributes() -> None:
+    """Step 5 follow-up #4, fix #2: the v1.1 prompt instructs the model
+    to qualify status claims for cross-file-dependent attributes
+    (DC-2.C and DC-9.C in the current corpus). Without this, the
+    narrative inherits Layer-1's workpaper-internal status verbatim —
+    which is what caused the DC-9 Q3 C semantic-only-fail (judge caught)
+    AND the DC-2 Q3 C hidden FP (judge missed) in the v1.0 baseline.
+    """
+    text = load_prompt("v1.1")
+    assert "CROSS-FILE-DEPENDENT ATTRIBUTES" in text
+    # The two attributes the v1.0 baseline exposed as cross-file-dependent
+    # must be named in the prompt — otherwise the LLM has no way to know
+    # which attributes need qualification.
+    assert "DC-2.C" in text
+    assert "DC-9.C" in text
+    # The qualification language itself must be present.
+    assert "cross-file reconciliation" in text.lower()
