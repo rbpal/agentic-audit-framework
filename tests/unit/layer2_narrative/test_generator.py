@@ -100,7 +100,9 @@ def test_from_env_reads_endpoint_from_env_var(monkeypatch: pytest.MonkeyPatch) -
 
     assert gen.endpoint == "https://test-endpoint.example.com/"
     assert gen.deployment == "gpt-4o"  # default
-    assert gen.prompt_version == "v1.0"  # default
+    # Default bumped v1.0 → v1.1 once the v1.1 final baseline became canonical
+    # (2026-05-11). v1.0 is still runnable via explicit override (see next test).
+    assert gen.prompt_version == "v1.1"
 
 
 def test_from_env_uses_explicit_overrides(monkeypatch: pytest.MonkeyPatch) -> None:

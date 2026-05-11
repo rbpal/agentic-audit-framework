@@ -219,8 +219,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--prompt-version",
-        default="v1.0",
-        help="Prompt template version pinned at the generator (default: v1.0)",
+        default="v1.1",
+        help=(
+            "Prompt template version pinned at the generator "
+            "(default: v1.1 — the canonical v1.1 final baseline from "
+            "2026-05-11). Pass v1.0 to re-run the historical baseline "
+            "for A/B comparison."
+        ),
     )
     parser.add_argument(
         "--dry-run",

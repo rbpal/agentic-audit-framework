@@ -710,10 +710,11 @@ def test_main_live_runs_full_pipeline_with_mocked_components(
     assert exit_code == 0
 
     # Wiring assertions.
-    # prompt_version defaults to v1.0 (Step 5 follow-up #4) — flag was
-    # added so v1.1 re-baseline sweeps can be scoped explicitly.
+    # prompt_version default was bumped v1.0 → v1.1 once the v1.1 final
+    # baseline became canonical (2026-05-11). v1.0 is still runnable via
+    # explicit `--prompt-version v1.0` for A/B regression.
     mock_narratives_reader.iter_narratives.assert_called_once_with(
-        "alpha-pension-fund-2025", prompt_version="v1.0"
+        "alpha-pension-fund-2025", prompt_version="v1.1"
     )
     mock_judge.evaluate.assert_called_once()
     mock_writer.write_judge_outcome.assert_called_once()

@@ -333,13 +333,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--prompt-version",
-        default="v1.0",
+        default="v1.1",
         help=(
             "Narrative prompt_version to filter gold.narratives on. "
             "Used by the reader to scope the sweep to one prompt cohort "
-            "(default: v1.0). Pass 'v1.1' to judge the v1.1 re-baseline "
-            "sweep. Does NOT affect the judge prompt itself, which is "
-            "pinned on the Judge instance."
+            "(default: v1.1 — the canonical v1.1 final baseline from "
+            "2026-05-11). Pass 'v1.0' to judge the historical baseline "
+            "for A/B comparison. Does NOT affect the judge prompt itself, "
+            "which is pinned on the Judge instance."
         ),
     )
     parser.add_argument(
