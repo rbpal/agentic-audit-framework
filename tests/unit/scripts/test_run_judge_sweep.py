@@ -709,8 +709,12 @@ def test_main_live_runs_full_pipeline_with_mocked_components(
 
     assert exit_code == 0
 
-    # Wiring assertions
-    mock_narratives_reader.iter_narratives.assert_called_once_with("alpha-pension-fund-2025")
+    # Wiring assertions.
+    # prompt_version defaults to v1.0 (Step 5 follow-up #4) — flag was
+    # added so v1.1 re-baseline sweeps can be scoped explicitly.
+    mock_narratives_reader.iter_narratives.assert_called_once_with(
+        "alpha-pension-fund-2025", prompt_version="v1.0"
+    )
     mock_judge.evaluate.assert_called_once()
     mock_writer.write_judge_outcome.assert_called_once()
     mock_cost_writer.write_cost_telemetry.assert_called_once()
@@ -721,3 +725,60 @@ def test_main_live_runs_full_pipeline_with_mocked_components(
     assert "pass/fail/uncertain = 1/0/0" in out
     assert "cost telemetry" in out
     assert "LLM calls" in out
+
+
+def test_main_live_prompt_version_v1_1_threads_through_to_reader(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Step 5 follow-up #4: the ``--prompt-version`` CLI flag scopes
+    the sweep to a specific narrative cohort in ``gold.narratives``.
+
+    Without this wiring, a v1.1 re-baseline sweep would silently read
+    the v1.0 baseline rows (the reader's default), and the judge
+    sweep would re-judge v1.0 narratives instead of v1.1 ones.
+    """
+    import run_judge_sweep as mod  # type: ignore[import-not-found]
+
+    fake_narrative = _fake_narrative(control_id="DC-9", quarter="Q1", attribute_id="A")
+    # Override the prompt_version on the fixture so the assertion is unambiguous.
+    fake_narrative_v1_1 = fake_narrative.model_copy(update={"prompt_version": "v1.1"})
+
+    mock_judge = MagicMock()
+    mock_judge.deployment = "gpt-4o"
+    mock_judge.prompt_version = "judge_v1.0"
+    mock_judge.evaluate.return_value = JudgeResponse(
+        verdict="pass", confidence=0.9, reasoning="r", cited_evidence_fields=["x"]
+    )
+
+    mock_narratives_reader = MagicMock()
+    mock_narratives_reader.iter_narratives.return_value = [fake_narrative_v1_1]
+
+    mock_silver_reader = MagicMock()
+    mock_silver_reader.read.return_value = _fake_evidence("DC-9", "Q1")
+
+    mock_writer = MagicMock()
+    mock_cost_writer = MagicMock()
+
+    monkeypatch.setattr(mod, "_build_warehouse_conn_factory", lambda: MagicMock())
+    monkeypatch.setattr(mod, "Judge", MagicMock(from_env=lambda **_kw: mock_judge))
+    monkeypatch.setattr(mod, "SilverEvidenceReader", lambda *_a, **_kw: mock_silver_reader)
+    monkeypatch.setattr(mod, "GoldNarrativesReader", lambda *_a, **_kw: mock_narratives_reader)
+    monkeypatch.setattr(mod, "JudgeOutcomesWriter", lambda *_a, **_kw: mock_writer)
+    monkeypatch.setattr(mod, "CostTelemetryWriter", lambda *_a, **_kw: mock_cost_writer)
+
+    repo_root = Path(__file__).resolve().parents[3]
+    toc_dir = str(repo_root / "eval" / "gold_scenarios" / "tocs")
+
+    exit_code = main(["--toc-dir", toc_dir, "--prompt-version", "v1.1"])
+    assert exit_code == 0
+
+    # The wiring assertion: the reader was scoped to v1.1, not the default v1.0.
+    mock_narratives_reader.iter_narratives.assert_called_once_with(
+        "alpha-pension-fund-2025", prompt_version="v1.1"
+    )
+
+    # And the operator banner reflects both narrative + judge prompt versions
+    # without hardcoding either.
+    out = capsys.readouterr().out
+    assert "narrative_prompt_version=v1.1" in out
+    assert "judge_prompt_version=judge_v1.0" in out
