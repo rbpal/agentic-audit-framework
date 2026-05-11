@@ -140,6 +140,31 @@ _ENTITY_STOPWORDS: frozenset[str] = frozenset(
         "GMT",
         "EST",
         "PST",
+        # Sentence-initial transition adverbs — LLMs introduce these
+        # when emitting qualifying clauses (e.g. v1.1 cross-file-
+        # dependent attribute narratives: "...status is 'pass'.
+        # However, the overall conclusion depends on..."). The entity
+        # regex captures the capitalised "However" as a proper noun;
+        # it isn't one. Surfaced by the v1.1 baseline sweep
+        # (judge_run_id FBFCC5B0...) on DC-9.C narratives.
+        "However",
+        "Therefore",
+        "Furthermore",
+        "Additionally",
+        "Moreover",
+        "Consequently",
+        "Subsequently",
+        "Nevertheless",
+        "Accordingly",
+        "Specifically",
+        "Particularly",
+        # Audit-domain concept abbreviations the narrative may reference
+        # without those concepts appearing in workpaper-only evidence.
+        # The reference is intentional (qualifying language acknowledging
+        # cross-file scope), not a hallucination. Same v1.1 sweep root
+        # cause as the adverb cluster above — every cross-file-dependent
+        # attribute narrative flagged "TOC" via the entity regex.
+        "TOC",
     }
 )
 

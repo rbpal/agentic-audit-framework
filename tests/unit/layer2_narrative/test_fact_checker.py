@@ -325,6 +325,91 @@ def test_other_timezone_qualifiers_are_also_filtered() -> None:
         assert tz_code in _ENTITY_STOPWORDS, tz_code
 
 
+def test_sentence_initial_however_is_not_flagged_as_entity() -> None:
+    """Regression for the v1.1 baseline sweep (judge_run_id
+    FBFCC5B0A6D48751910CACDD4F9EC011). Every cross-file-dependent
+    attribute narrative (DC-9.C in Q1/Q2/Q4) introduced a qualifying
+    clause starting with "However,". The entity regex captured
+    capitalised ``However`` as a proper-noun token; it isn't one.
+    The fix is to add common sentence-initial transition adverbs
+    (However, Therefore, Furthermore, etc.) to the stopword list.
+    """
+    evidence = _evidence_with_notes(
+        {
+            "C": (
+                "DC-9 Billing check status pass; asset 337995108.0, "
+                "fee 844987.0, rate 0.0025; null notes."
+            )
+        }
+    )
+    # Reproduce the v1.1 narrative shape that flagged 'However' in the
+    # live sweep: qualifying clause about cross-file dependency.
+    narrative = _narrative(
+        "The attribute DC-9.C was tested using evidence from "
+        "DC-9 Billing!r8c1. The workpaper-internal check status is "
+        "'pass' (see DC-9 Billing!r8c1). However, the overall "
+        "conclusion depends on cross-file reconciliation, which is "
+        "not evaluated within this workpaper."
+    )
+
+    result = FactChecker().check(narrative, evidence)
+
+    # After the However stopword fix, the narrative should pass —
+    # all real entities ("DC-9", "DC-9 Billing") are grounded.
+    assert result.passed is True, result.issues
+
+
+def test_transition_adverbs_are_all_in_the_stopword_family() -> None:
+    """Documents the full transition-adverb family at the test layer
+    so a future LLM that picks a different transition word ("Moreover"
+    instead of "However") doesn't surprise us with a fresh FP."""
+    from agentic_audit.layer2_narrative.fact_checker import _ENTITY_STOPWORDS
+
+    for adverb in (
+        "However",
+        "Therefore",
+        "Furthermore",
+        "Additionally",
+        "Moreover",
+        "Consequently",
+        "Subsequently",
+        "Nevertheless",
+        "Accordingly",
+        "Specifically",
+        "Particularly",
+    ):
+        assert adverb in _ENTITY_STOPWORDS, adverb
+
+
+def test_toc_audit_concept_abbreviation_is_not_flagged_as_entity() -> None:
+    """Regression for the v1.1 sweep: every cross-file-dependent
+    attribute narrative references "engagement TOC" as part of the
+    qualifying clause ("the overall conclusion depends on cross-file
+    reconciliation against the engagement TOC"). The TOC isn't
+    workpaper-content — it's a separate audit artifact the narrative
+    intentionally names to acknowledge cross-file scope. FactChecker
+    shouldn't require TOC content to appear in workpaper-only
+    evidence. Fix: TOC added to the stopword list.
+    """
+    evidence = _evidence_with_notes(
+        {"C": ("DC-2 Variance check status pass; 4 rows checked in Q1; null notes.")}
+    )
+    # Reproduce the v1.1 narrative shape that flagged 'TOC' in the
+    # live sweep: cross-file qualification language for DC-2.C.
+    # Fixture is hard-coded to Q1 so the narrative uses Q1 too;
+    # the test is about TOC, not quarter scope.
+    narrative = _narrative(
+        "The attribute DC-2.C was tested in Q1. The workpaper-internal "
+        "check status is 'pass' (see DC-2 Variance!r10c7). The overall "
+        "conclusion depends on cross-file reconciliation against the "
+        "engagement TOC, which is not evaluated within this workpaper."
+    )
+
+    result = FactChecker().check(narrative, evidence)
+
+    assert result.passed is True, result.issues
+
+
 # ---------- numeric percent ↔ decimal equivalence ----------------------
 
 
