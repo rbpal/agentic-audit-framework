@@ -346,7 +346,13 @@ resource "databricks_sql_table" "gold_narratives" {
   column {
     name    = "generation_run_id"
     type    = "string"
-    comment = "Per-call run identifier. Joins to gold.cost_telemetry to answer 'what did this narrative cost to produce?'"
+    comment = "Per-SWEEP run identifier (misnomer preserved for backwards compat). Joins to gold.cost_telemetry to answer 'what did this sweep cost to produce?' Per-call identification lives in narrative_call_id."
+  }
+  column {
+    name     = "narrative_call_id"
+    type     = "string"
+    nullable = true
+    comment  = "Per-CALL ULID — fresh per NarrativeGenerator.generate() invocation. Joins to gold.judge_outcomes.narrative_run_id (also misnamed — Step 5 follow-up #5 tracker). NULL on historical v1.0 rows written before this column existed; all v1.1+ sweeps populate. Lets divergence queries join 1:1 between narrative and judgment without the composite-key workaround used today in scripts/divergence_summary.sql Q2."
   }
   column {
     name    = "generated_at"
