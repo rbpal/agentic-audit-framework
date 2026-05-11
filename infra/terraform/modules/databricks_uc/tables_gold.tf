@@ -346,13 +346,7 @@ resource "databricks_sql_table" "gold_narratives" {
   column {
     name    = "generation_run_id"
     type    = "string"
-    comment = "Per-SWEEP run identifier (misnomer preserved for backwards compat). Joins to gold.cost_telemetry to answer 'what did this sweep cost to produce?' Per-call identification lives in narrative_call_id."
-  }
-  column {
-    name     = "narrative_call_id"
-    type     = "string"
-    nullable = true
-    comment  = "Per-CALL ULID — fresh per NarrativeGenerator.generate() invocation. Joins to gold.judge_outcomes.narrative_run_id (also misnamed — Step 5 follow-up #5 tracker). NULL on historical v1.0 rows written before this column existed; all v1.1+ sweeps populate. Lets divergence queries join 1:1 between narrative and judgment without the composite-key workaround used today in scripts/divergence_summary.sql Q2."
+    comment = "Per-call run identifier. Joins to gold.cost_telemetry to answer 'what did this narrative cost to produce?'"
   }
   column {
     name    = "generated_at"
@@ -368,6 +362,16 @@ resource "databricks_sql_table" "gold_narratives" {
     name    = "fact_check_issues"
     type    = "array<string>"
     comment = "When fact_check_passed=false, the human-readable list of ungrounded tokens (e.g., \"numeric not in evidence: '$2,500'\"). Empty array when passed=true."
+  }
+  # narrative_call_id appended at END of block — Step 5 follow-up #5.
+  # The databricks_sql_table provider tracks columns POSITIONALLY;
+  # inserting in the middle triggers a destructive rename cascade.
+  # Always append. See TECH_DEBT.md and the 2026-05-12 incident notes.
+  column {
+    name     = "narrative_call_id"
+    type     = "string"
+    nullable = true
+    comment  = "Per-CALL ULID — fresh per NarrativeGenerator.generate() invocation. Joins to gold.judge_outcomes.narrative_run_id (also misnamed — Step 5 follow-up #5 tracker). NULL on historical v1.0 rows written before this column existed; all v1.1+ sweeps populate. Lets divergence queries join 1:1 between narrative and judgment without the composite-key workaround used today in scripts/divergence_summary.sql Q2."
   }
 }
 
