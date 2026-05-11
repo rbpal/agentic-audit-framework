@@ -1,17 +1,29 @@
-# Gold tables (step_03_task_08, extended in step_05_task_06).
+# Gold tables (step_03_task_08, extended in step_05_task_06,
+# step_06_task_04, step_07_task_00).
 #
 # Curated, aggregated, ready for direct consumption by the agent
 # loop, eval harness, dashboards, and partner-review reports.
 #
-# Five tables in audit_dev.gold:
-#   - agent_claims    : the agent's pass/fail/inconclusive claims per attribute per quarter
-#                       — defensible because each row has source_evidence_ids tracing back to silver.evidence
-#   - audit_findings  : final findings ready for partner review (severity, recommendation, status)
-#   - eval_outcomes   : eval-suite results comparing actual agent claims vs gold answers
-#   - cost_telemetry  : per-agent-run token spend, latency, model version
-#   - narratives      : Layer 2 LLM-generated grounded narratives + inlined fact-check verdict
-#                       (step_05_task_06). Keyed by (engagement, control, quarter, attribute, prompt_version)
-#                       so prompt A/B versions land as parallel rows, not overwrites.
+# Seven tables in audit_dev.gold:
+#   - agent_claims      : the agent's pass/fail/inconclusive claims per attribute per quarter
+#                         — defensible because each row has source_evidence_ids tracing back to silver.evidence
+#   - audit_findings    : final findings ready for partner review (severity, recommendation, status)
+#   - eval_outcomes     : eval-suite results comparing actual agent claims vs gold answers
+#   - cost_telemetry    : per-agent-run token spend, latency, model version
+#   - narratives        : Layer 2 LLM-generated grounded narratives + inlined fact-check verdict
+#                         (step_05_task_06). Keyed by (engagement, control, quarter, attribute, prompt_version)
+#                         so prompt A/B versions land as parallel rows, not overwrites.
+#   - judge_outcomes    : Step 6 LLM-as-judge verdicts over Layer 2 narratives. Append-only per judge_run_id.
+#                         (step_06_task_04). Distinct from eval_outcomes (Layer-1 deterministic comparison).
+#   - layer3_decisions  : Step 7 supervisor write target — one row per Layer-3 multi-agent investigation.
+#                         Holds verdict + reasoning chain + full tool trace (JSON). Append-only per
+#                         investigation_run_id. (step_07_task_00).
+#
+# Append-only invariant: when adding columns to any databricks_sql_table
+# in this file, APPEND to the end of the column block. Mid-block insertion
+# triggers a positional rename cascade in the provider — see TECH_DEBT.md
+# "databricks_sql_table provider tracks columns positionally" for the
+# 2026-05-12 incident.
 
 resource "databricks_sql_table" "gold_agent_claims" {
   catalog_name       = databricks_catalog.this.name
@@ -463,5 +475,116 @@ resource "databricks_sql_table" "gold_judge_outcomes" {
     name    = "evaluated_at"
     type    = "timestamp"
     comment = "UTC timestamp at judge call return time."
+  }
+}
+
+resource "databricks_sql_table" "gold_layer3_decisions" {
+  catalog_name       = databricks_catalog.this.name
+  schema_name        = databricks_schema.this["gold"].name
+  name               = "layer3_decisions"
+  table_type         = "MANAGED"
+  data_source_format = "DELTA"
+
+  comment = "Step 7 Layer-3 supervisor write target. One row per multi-agent investigation. Holds the final verdict + reasoning chain + tool trace (JSON-serialised investigation_log). Append-only by investigation_run_id — re-running the supervisor on the same scope produces a new row, not an overwrite. Design choice locked in step_07_task_00 (Option C from Step 6 Design rationale § B): slim verdict + trace pointer over single-table-with-subject-layer or sibling-judge-outcomes. step_07_task_00."
+
+  column {
+    name    = "agent_run_id"
+    type    = "string"
+    comment = "Per-SUPERVISOR-SWEEP run identifier. Shared across all investigations in a single run_layer3 sweep. Joins to gold.cost_telemetry for sweep-level cost rollups."
+  }
+  column {
+    name    = "investigation_run_id"
+    type    = "string"
+    comment = "Per-INVESTIGATION ULID — unique per supervisor.invoke() call. The natural primary key. Joins to gold.judge_outcomes(_layer3?) once task_07 picks the judge-side storage shape."
+  }
+  column {
+    name    = "engagement_id"
+    type    = "string"
+    comment = "Engagement identifier — denormalised so Step 7's downstream consumers can filter by tenant scope without joining."
+  }
+  column {
+    name    = "control_id"
+    type    = "string"
+    comment = "SOX control under investigation (e.g., 'DC-9' for billing rate change; 'DC-2' for variance plausibility). Denormalised."
+  }
+  column {
+    name    = "attribute_id"
+    type    = "string"
+    comment = "Layer-3-eligible attribute identifier — DC-9.D (billing_rate_change exception) or DC-2.B (variance_plausibility exception) in v1. Denormalised."
+  }
+  column {
+    name    = "quarter"
+    type    = "string"
+    comment = "Audit period (e.g., 'Q3'). Denormalised."
+  }
+  column {
+    name    = "exception_type"
+    type    = "string"
+    comment = "Which Layer-3 investigation path fired: 'billing_rate_change' (DC-9.D) or 'variance_plausibility' (DC-2.B). Step 5 Decision 2 expanded scope to two exception types; this column lets downstream filter by path."
+  }
+  column {
+    name    = "final_verdict"
+    type    = "string"
+    comment = "Supervisor's final verdict: 'pass' (investigation concluded the exception is authorised) | 'fail' (concluded the exception is NOT authorised) | 'uncertain' (escalated_to_human or failed)."
+  }
+  column {
+    name    = "final_confidence"
+    type    = "double"
+    comment = "Supervisor's final confidence in [0, 1]. The 3-iteration ceiling means this can be set without the supervisor having actually converged — read jointly with status."
+  }
+  column {
+    name    = "iterations_used"
+    type    = "int"
+    comment = "Number of supervisor → sub-agent → supervisor cycles consumed. Bounded by the 3-iteration ceiling (master plan engineering decision)."
+  }
+  column {
+    name    = "status"
+    type    = "string"
+    comment = "Terminal state machine state: 'concluded' (verdict trusted) | 'escalated_to_human' (confidence below threshold OR iteration cap hit) | 'failed' (sub-agent exception preserved partial state for postmortem). Every supervisor run lands exactly one of these; never silent failure."
+  }
+  column {
+    name    = "narrative_text"
+    type    = "string"
+    comment = "The final ExceptionNarrative content (≤200 words). On escalate, this is the degraded handoff text ('Automated investigation could not reach sufficient confidence; human review required.'); on conclude, the grounded exception narrative produced by the narrative sub-agent."
+  }
+  column {
+    name    = "citations"
+    type    = "array<string>"
+    comment = "Evidence cell refs / IMA-amendment locations the narrative cited. Empty array on escalate. Parallel to gold.narratives.cited_fields."
+  }
+  column {
+    name    = "recommendation"
+    type    = "string"
+    comment = "ExceptionNarrative.recommendation: 'ACCEPT' (concluded path) or 'ESCALATE' (escalated_to_human path). Downstream consumers (Step 13 review UI) route on this column."
+  }
+  column {
+    name    = "tool_trace"
+    type    = "string"
+    comment = "JSON-serialised InvestigationState.investigation_log — full reasoning chain across all supervisor → sub-agent cycles. Stored as string (not struct) so the schema doesn't lock into a specific log-entry shape; downstream consumers parse on read. THE auditability artefact — without this, the Layer-3 verdict is unreviewable."
+  }
+  column {
+    name    = "judge_verdict"
+    type    = "string"
+    comment = "Denormalised from the synchronous judge call at conclude time (Step 6 believe-either-fail gate, wired in task_07). 'pass' / 'fail' / 'uncertain'. NULL on escalate paths where the judge wasn't consulted. Filterable without parsing tool_trace."
+  }
+  column {
+    name    = "judge_confidence"
+    type    = "double"
+    comment = "Denormalised from the same judge call. NULL when judge_verdict is NULL."
+  }
+  column {
+    name    = "prompt_version"
+    type    = "string"
+    comment = "Composite prompt version string across sub-agents — e.g., 'extraction_v1.0|validation_v1.0|narrative_v1.1'. Pipe-delimited so the column is searchable + parseable. Required for SOX reproducibility — re-running with bumped prompts produces parallel rows under a new investigation_run_id, not overwrites."
+  }
+  column {
+    name    = "model_deployment"
+    type    = "string"
+    comment = "Azure OpenAI deployment name pinned across all sub-agents (e.g., 'gpt-4o'). Pinned per supervisor instance. Required for SOX reproducibility."
+  }
+  column {
+    name    = "decided_at"
+    type    = "timestamp"
+    comment = "UTC timestamp at supervisor exit (conclude or escalate). End of the wall-clock window for this investigation; joins with cost_telemetry to compute per-investigation latency."
   }
 }
