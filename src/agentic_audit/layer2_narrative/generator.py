@@ -183,7 +183,7 @@ class NarrativeGenerator:
         cls,
         *,
         deployment: str = "gpt-4o",
-        prompt_version: str = "v1.0",
+        prompt_version: str = "v1.1",
         endpoint_env_var: str = "AZURE_OPENAI_ENDPOINT",
         usage_recorder: UsageRecorder | None = None,
     ) -> NarrativeGenerator:
