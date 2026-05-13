@@ -41,6 +41,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agentic_audit.models.engagement import ControlId, Quarter
 from agentic_audit.models.evidence import AttributeId, ExtractedEvidence
+from agentic_audit.models.judge import JudgeVerdict
 
 # ── Type aliases ─────────────────────────────────────────────────────
 
@@ -219,6 +220,15 @@ class InvestigationState(TypedDict, total=False):
     extraction_findings: ExtractionFindings | None
     validation_findings: ValidationFindings | None
     final_narrative: ExceptionNarrative | None
+
+    # Populated by supervisor_node when ``final_narrative`` first lands
+    # (task_03 wires the gate). Both None until then. Read by
+    # ``route_from_supervisor`` for the conclude-vs-escalate decision
+    # and serialised to ``gold.layer3_decisions.{judge_verdict,
+    # judge_confidence}`` at supervisor exit. NULL on escalate paths
+    # where no narrative was produced (e.g. iteration-cap escalate).
+    judge_verdict: JudgeVerdict | None
+    judge_confidence: float | None
 
     confidence_score: float
     iterations_used: int
