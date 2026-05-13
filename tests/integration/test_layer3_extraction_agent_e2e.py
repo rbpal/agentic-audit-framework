@@ -136,6 +136,16 @@ def test_extraction_agent_invoke_returns_extraction_findings(
     semantic (real tools, real evidence)."""
     state = _billing_rate_state()
     findings = extraction_agent.invoke(state)
+
+    # Surface the LLM's response so a developer running this test on
+    # demand can see what the model actually emitted. Visible with
+    # `pytest -s` (default captures stdout otherwise). Cheap signal —
+    # printed JSON is the single piece of evidence that the LLM was
+    # really reached + parsed correctly.
+    print("\n=== ExtractionAgent live response ===")
+    print(findings.model_dump_json(indent=2, exclude_none=True))
+    print(f"=== confidence={findings.confidence} ===\n")
+
     assert isinstance(findings, ExtractionFindings)
     # Confidence is bounded by the pydantic validator; this assertion
     # is more about "the model populated SOMETHING in the allowed
