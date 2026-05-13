@@ -292,9 +292,11 @@ def run_investigation(
     # LangGraph 1.x ``invoke`` overloads don't match a plain TypedDict
     # input + raw dict config — the stubs want ``RunnableConfig``, a
     # narrower TypedDict. At runtime LangGraph accepts both unchanged.
-    # Suppress the overload check on this single line; cast the result
-    # back to InvestigationState for caller type-safety.
-    result = compiled_graph.invoke(initial_state, config=config)  # type: ignore[call-overload]
+    # The ``unused-ignore`` partner code is needed because mypy resolves
+    # the langgraph stubs differently in whole-package mode vs the
+    # single-file pre-commit run; one mode sees the overload error,
+    # the other doesn't.
+    result = compiled_graph.invoke(initial_state, config=config)  # type: ignore[call-overload,unused-ignore]
     return cast(InvestigationState, result)
 
 
