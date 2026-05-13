@@ -101,6 +101,7 @@ disallow_untyped_defs = false
 module = [
     "azure.identity.*",
     "langchain_core.*",
+    "langchain_openai.*",
     "langgraph.*",
     "mlflow.*",
     "openai.*",

@@ -55,6 +55,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from agentic_audit.layer3_agents.extraction_agent import ExtractionAgent
 from agentic_audit.layer3_agents.state import (
     ExceptionType,
     InvestigationState,
@@ -88,6 +89,12 @@ CONFIDENCE_THRESHOLD: float = 0.7
 # spelling — typos surface as fail-closed escalates, not silent
 # misrouting.
 LAYER3_JUDGE_CONFIG_KEY: str = "layer3_judge"
+
+# Injection key for the Extraction sub-agent. Same pattern as the
+# judge key — centralised so a typo can't silently disable the agent.
+# When absent, ``extraction_agent_node`` returns ``{}`` (stub
+# behaviour) and the supervisor iterates until the cap fires.
+LAYER3_EXTRACTION_AGENT_CONFIG_KEY: str = "layer3_extraction_agent"
 
 # ── Layer-3 judge protocol ───────────────────────────────────────────
 
@@ -263,13 +270,44 @@ def route_from_supervisor(state: InvestigationState) -> str:
     return _decide_route(state)
 
 
-# ── Sub-agent stubs (real implementations land in task_04–06) ────────
+# ── Sub-agent nodes (validation + narrative still stubs) ─────────────
 
 
-def extraction_agent_node(state: InvestigationState) -> dict[str, Any]:
-    """Extraction sub-agent stub — task_04 ships ``create_react_agent``
-    bound to the Step 8 tools."""
-    return {}
+def extraction_agent_node(
+    state: InvestigationState,
+    config: RunnableConfig,
+) -> dict[str, Any]:
+    """Run the Extraction sub-agent if one is injected; otherwise no-op.
+
+    Reads an ``ExtractionAgent`` instance from
+    ``config["configurable"][LAYER3_EXTRACTION_AGENT_CONFIG_KEY]``.
+    When present, invokes it against the live state and writes
+    ``extraction_findings`` + a trace entry. When absent, returns ``{}``
+    — same fail-closed posture as the judge gate: the supervisor will
+    loop until the iteration cap fires, leaving a clear trace of
+    repeated routing-to-extraction attempts.
+
+    The Step 8 tools the agent binds are placeholders today
+    (``tools.py`` — canned empty payloads). Real tool bodies land in
+    Step 8 without touching this wiring; the agent + supervisor stay
+    untouched on that swap.
+    """
+    agent_obj = (config.get("configurable") or {}).get(LAYER3_EXTRACTION_AGENT_CONFIG_KEY)
+    if agent_obj is None:
+        return {}
+    agent = cast(ExtractionAgent, agent_obj)
+    findings = agent.invoke(state)
+    return {
+        "extraction_findings": findings,
+        "investigation_log": [
+            InvestigationStep(
+                iteration=state.get("iterations_used", 0),
+                actor="extraction_agent",
+                action="emitted_extraction_findings",
+                timestamp=datetime.now(UTC),
+            )
+        ],
+    }
 
 
 def validation_agent_node(state: InvestigationState) -> dict[str, Any]:
@@ -340,6 +378,7 @@ def run_investigation(
     *,
     agent_run_id: str,
     judge: Layer3JudgeFunc | None = None,
+    extraction_agent: ExtractionAgent | None = None,
 ) -> InvestigationState:
     """Run one Layer-3 investigation end-to-end.
 
@@ -369,6 +408,13 @@ def run_investigation(
         conclude-vs-escalate gate. ``None`` (the default) is fail-closed
         — any narrative-bearing state routes to escalate. Task_07 wires
         the real LLM-backed judge through this hook.
+    extraction_agent
+        Optional Extraction sub-agent. When present, the supervisor's
+        ``extraction_agent_node`` invokes it once to populate
+        ``extraction_findings``. ``None`` (the default) leaves the node
+        as a no-op — the supervisor keeps routing to extraction until
+        the iteration cap fires. Production wires
+        ``ExtractionAgent.from_env()``.
 
     Raises
     ------
@@ -434,6 +480,8 @@ def run_investigation(
     configurable: dict[str, Any] = {"thread_id": investigation_run_id}
     if judge is not None:
         configurable[LAYER3_JUDGE_CONFIG_KEY] = judge
+    if extraction_agent is not None:
+        configurable[LAYER3_EXTRACTION_AGENT_CONFIG_KEY] = extraction_agent
     config: dict[str, Any] = {
         "configurable": configurable,
         "recursion_limit": 10,
@@ -451,6 +499,7 @@ def run_investigation(
 
 __all__ = [
     "CONFIDENCE_THRESHOLD",
+    "LAYER3_EXTRACTION_AGENT_CONFIG_KEY",
     "LAYER3_JUDGE_CONFIG_KEY",
     "MAX_ITERATIONS",
     "Layer3JudgeFunc",
