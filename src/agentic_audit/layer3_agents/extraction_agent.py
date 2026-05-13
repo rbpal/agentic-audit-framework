@@ -189,12 +189,35 @@ class ExtractionAgent:
         malformed response surfaces as ``ValidationError`` rather than
         silently propagating empty findings.
         """
+        findings, _messages = self._invoke_with_messages(state)
+        return findings
+
+    def _invoke_with_messages(
+        self, state: InvestigationState
+    ) -> tuple[ExtractionFindings, list[Any]]:
+        """Diagnostic variant of ``invoke`` — returns findings PLUS the
+        full ReAct message history (HumanMessage / AIMessage /
+        ToolMessage chain).
+
+        Production callers should use ``invoke`` which discards the
+        history. The history is the auditability artefact for "what
+        did the agent reason about" — task_08 may persist it via
+        ``@traced_function`` spans; until then this hook lets the
+        slow integration test surface the reasoning chain for
+        operator review.
+
+        Leading underscore signals "diagnostic, not a public API" —
+        the signature can change without bumping the production
+        contract.
+        """
         exception_type = state["exception_type"]
         prompt = self._render_prompt(state, exception_type)
         agent = self._ensure_compiled()
 
         result: dict[str, Any] = agent.invoke({"messages": [{"role": "user", "content": prompt}]})
-        return self._parse_structured_response(result)
+        findings = self._parse_structured_response(result)
+        messages: list[Any] = result.get("messages", [])
+        return findings, messages
 
     # ── Prompt rendering ────────────────────────────────────────────
 

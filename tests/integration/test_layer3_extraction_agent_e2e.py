@@ -135,7 +135,7 @@ def test_extraction_agent_invoke_returns_extraction_findings(
     the structured output validates. Step 8 makes the assertion
     semantic (real tools, real evidence)."""
     state = _billing_rate_state()
-    findings = extraction_agent.invoke(state)
+    findings, messages = extraction_agent._invoke_with_messages(state)
 
     # Surface the LLM's response so a developer running this test on
     # demand can see what the model actually emitted. Visible with
@@ -144,7 +144,27 @@ def test_extraction_agent_invoke_returns_extraction_findings(
     # really reached + parsed correctly.
     print("\n=== ExtractionAgent live response ===")
     print(findings.model_dump_json(indent=2, exclude_none=True))
-    print(f"=== confidence={findings.confidence} ===\n")
+    print(f"=== confidence={findings.confidence} ===")
+
+    # Walk the ReAct message history so the operator can see the agent's
+    # reasoning chain — which tools it chose, what args it passed, what
+    # the tools returned. The lineage strings in evidence_anchors echo
+    # back here as proof real tool calls fired (not just a hallucinated
+    # final JSON).
+    print("\n=== Message history ===")
+    for i, msg in enumerate(messages):
+        msg_type = type(msg).__name__
+        content = (getattr(msg, "content", "") or "").strip()
+        tool_calls = getattr(msg, "tool_calls", None) or []
+        snippet = content if len(content) <= 200 else content[:200] + "..."
+        print(f"\n[{i}] {msg_type}")
+        if snippet:
+            print(f"    content: {snippet}")
+        for tc in tool_calls:
+            tc_name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "?")
+            tc_args = tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", {})
+            print(f"    tool_call: {tc_name}({tc_args})")
+    print()
 
     assert isinstance(findings, ExtractionFindings)
     # Confidence is bounded by the pydantic validator; this assertion
