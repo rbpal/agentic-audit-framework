@@ -1,19 +1,12 @@
-"""LangGraph ``StateGraph`` skeleton for the Layer 3 supervisor (Step 7
-task_02).
+"""LangGraph ``StateGraph`` for the Layer 3 supervisor.
 
-This module wires the four-node graph and exposes the ``run_investigation``
-entry point. The nodes themselves are stubs at task_02 — they return
-empty partial-state updates so the graph compiles and the topology is
-queryable via ``draw_mermaid()``. Real logic lands in:
+This module wires the four-node graph, exposes ``run_investigation``,
+and ships the rule-based supervisor + conditional-edge router. The
+extraction / validation / narrative sub-agents are still stubs:
 
-- task_03 — ``supervisor_node`` + ``route_from_supervisor`` routing rules
 - task_04 — ``extraction_agent_node``
 - task_05 — ``validation_agent_node``
 - task_06 — ``narrative_agent_node``
-
-The stub ``route_from_supervisor`` always returns ``"escalate"`` so the
-graph is bounded: ``START → supervisor → END`` in two supersteps. No
-recursion-limit risk, no node ever called more than once.
 
 Topology (matches ``privateDocs/step_07_layer3_multiagent.md`` task_02)::
 
@@ -24,17 +17,40 @@ Topology (matches ``privateDocs/step_07_layer3_multiagent.md`` task_02)::
     validation_agent → supervisor
     narrative_agent  → supervisor
 
+Supervisor decision rules (task_03, rule-based, NOT LLM):
+
+1. ``iterations_used >= MAX_ITERATIONS`` → ``"escalate"``
+2. ``extraction_findings is None`` → ``"extraction"``
+3. ``validation_findings is None`` → ``"validation"``
+4. ``final_narrative is None`` → ``"narrative"``
+5. ``final_narrative is not None``:
+   - ``confidence_score >= CONFIDENCE_THRESHOLD`` AND ``judge_verdict == "pass"`` → ``"conclude"``
+   - otherwise → ``"escalate"``
+
+The judge-gate check is the Step 6 believe-either-fail wiring: the
+supervisor only concludes when both the agent's self-reported
+confidence AND a structured judge verdict agree. Without that, Layer 3
+would conclude on raw confidence alone — the gate exists to catch the
+case where the agent is confidently wrong.
+
+The judge call itself happens inside ``supervisor_node`` (the routing
+function ``route_from_supervisor`` stays pure). Inject via
+``config["configurable"]["layer3_judge"]`` — a ``Layer3JudgeFunc``
+``Callable[[InvestigationState], JudgeResponse]``. Defaults to ``None``,
+which makes the gate fail-closed: any narrative-bearing state with no
+judge configured routes to escalate. Task_07 wires the real
+LLM-backed Layer-3 judge through this hook.
+
 Checkpointer is ``InMemorySaver`` (1.x rename of ``MemorySaver``).
-Cross-process resume isn't a v1 requirement; switch to
-``PostgresCheckpointer`` if/when supervisor runs need to survive process
-restarts (deferred follow-up).
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, cast
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -42,12 +58,46 @@ from langgraph.graph.state import CompiledStateGraph
 from agentic_audit.layer3_agents.state import (
     ExceptionType,
     InvestigationState,
+    InvestigationStep,
 )
 from agentic_audit.models.evidence import (
     LAYER3_ATTRIBUTES_PER_CONTROL,
     AttributeCheck,
     ExtractedEvidence,
 )
+from agentic_audit.models.judge import JudgeResponse
+
+# ── Routing constants ────────────────────────────────────────────────
+
+# 3-iteration ceiling matches the master plan + task_07. Each
+# supervisor visit increments the counter BEFORE the cap check, so
+# the third visit is the one that escalates. Bounds cost + prevents
+# runaway loops; LangGraph's ``recursion_limit=10`` is a belt-and-
+# suspenders backstop.
+MAX_ITERATIONS: int = 3
+
+# Confidence floor for concluding. Matches Step 6's gate posture —
+# the supervisor concludes only when the agent's confidence AND the
+# judge agree. Override per-call via ``run_investigation``'s
+# ``confidence_threshold`` kwarg when a calibration sweep wants to
+# explore the curve.
+CONFIDENCE_THRESHOLD: float = 0.7
+
+# Injection key for the Layer-3 judge inside ``RunnableConfig.configurable``.
+# Centralised so the supervisor and ``run_investigation`` agree on the
+# spelling — typos surface as fail-closed escalates, not silent
+# misrouting.
+LAYER3_JUDGE_CONFIG_KEY: str = "layer3_judge"
+
+# ── Layer-3 judge protocol ───────────────────────────────────────────
+
+# Minimal contract task_03 needs from a judge: take the live
+# ``InvestigationState`` and return a structured verdict. The supervisor
+# reads ``.verdict`` and ``.confidence`` off the result; reasoning +
+# cited_evidence_fields are persisted via the trace by task_07 / task_08.
+# Reusing the Layer-2 ``JudgeResponse`` shape avoids a parallel model
+# until/unless task_07 finds a real divergence.
+Layer3JudgeFunc = Callable[[InvestigationState], JudgeResponse]
 
 # ── Layer-1 trigger ──────────────────────────────────────────────────
 
@@ -105,23 +155,115 @@ def _infer_exception_type(check: AttributeCheck) -> ExceptionType:
     return _EXCEPTION_TYPE_BY_SCOPE[key]
 
 
-# ── Node stubs (real implementations land in task_03–06) ─────────────
+# ── Routing + supervisor (task_03) ───────────────────────────────────
 
 
-def supervisor_node(state: InvestigationState) -> dict[str, Any]:
-    """Supervisor stub — task_03 ships the real routing + iteration
-    increment + investigation_log append. For task_02 the node is a
-    no-op so the graph compiles and runs end-to-end."""
-    return {}
+def _decide_route(state: InvestigationState) -> str:
+    """Pure routing decision over a single state snapshot.
+
+    Called by both ``supervisor_node`` (to compute the destination
+    label for the trace + the terminal-status update) and
+    ``route_from_supervisor`` (to actually direct the conditional
+    edge). Sharing this function guarantees the log entry, the
+    persisted ``status``, and the LangGraph edge cannot disagree.
+
+    The fail-closed default on the judge gate is deliberate: a
+    narrative-bearing state with a missing or non-pass ``judge_verdict``
+    routes to ``"escalate"`` rather than ``"conclude"``. Confident-but-
+    unjudged narratives must not reach gold.
+    """
+    if state.get("iterations_used", 0) >= MAX_ITERATIONS:
+        return "escalate"
+    if state.get("extraction_findings") is None:
+        return "extraction"
+    if state.get("validation_findings") is None:
+        return "validation"
+    if state.get("final_narrative") is None:
+        return "narrative"
+    if (
+        state.get("confidence_score", 0.0) >= CONFIDENCE_THRESHOLD
+        and state.get("judge_verdict") == "pass"
+    ):
+        return "conclude"
+    return "escalate"
+
+
+# Map of route → terminal Layer3Status. Only conclude/escalate
+# transition the state machine; sub-agent dispatch routes leave
+# ``status="investigating"`` untouched.
+_TERMINAL_STATUS_BY_ROUTE: dict[str, str] = {
+    "conclude": "concluded",
+    "escalate": "escalated_to_human",
+}
+
+
+def supervisor_node(
+    state: InvestigationState,
+    config: RunnableConfig,
+) -> dict[str, Any]:
+    """Supervisor — rule-based dispatcher.
+
+    Side-effects per visit:
+
+    1. Increments ``iterations_used``.
+    2. If a ``final_narrative`` just landed and the judge gate has not
+       run yet, calls the injected ``Layer3JudgeFunc`` from ``config``
+       and writes ``judge_verdict`` + ``judge_confidence`` into state.
+    3. Computes the route via ``_decide_route`` against the post-update
+       state view.
+    4. Appends one ``InvestigationStep`` to ``investigation_log`` naming
+       the actual destination — the operator.add reducer concatenates
+       across visits, so the full chain survives.
+    5. On a terminal route (``"conclude"`` / ``"escalate"``) sets
+       ``status`` accordingly. Sub-agent dispatch leaves status as
+       ``"investigating"``.
+
+    Errors raised by the judge propagate — task_07's real Layer-3 judge
+    handles its own retries + uncertain-fallback (same posture as the
+    Layer-2 ``Judge.evaluate``). The supervisor stays out of that
+    business.
+    """
+    updates: dict[str, Any] = {}
+    new_iter = state.get("iterations_used", 0) + 1
+    updates["iterations_used"] = new_iter
+
+    if state.get("final_narrative") is not None and state.get("judge_verdict") is None:
+        judge = (config.get("configurable") or {}).get(LAYER3_JUDGE_CONFIG_KEY)
+        if judge is not None:
+            judge_fn = cast(Layer3JudgeFunc, judge)
+            judgment = judge_fn(state)
+            updates["judge_verdict"] = judgment.verdict
+            updates["judge_confidence"] = judgment.confidence
+
+    # Decide against the post-update view so the iteration-cap test
+    # and the judge-gate check both see the latest counters / fields.
+    future_state = cast(InvestigationState, {**state, **updates})
+    route = _decide_route(future_state)
+
+    updates["investigation_log"] = [
+        InvestigationStep(
+            iteration=new_iter,
+            actor="supervisor",
+            action=f"route_to_{route}",
+            timestamp=datetime.now(UTC),
+        )
+    ]
+
+    if route in _TERMINAL_STATUS_BY_ROUTE:
+        updates["status"] = _TERMINAL_STATUS_BY_ROUTE[route]
+
+    return updates
 
 
 def route_from_supervisor(state: InvestigationState) -> str:
-    """Conditional-edge stub — always escalates so task_02's compiled
-    graph terminates in two supersteps (START → supervisor → END).
-    Task_03 replaces this with the real five-way routing:
-    iteration-cap → extraction → validation → narrative → judge-gate
-    → conclude/escalate."""
-    return "escalate"
+    """Conditional-edge function — pure read of the post-supervisor
+    state. The actual decision lives in ``_decide_route``; this wrapper
+    exists because LangGraph's ``add_conditional_edges`` API takes a
+    callable, not a dict."""
+    return _decide_route(state)
+
+
+# ── Sub-agent stubs (real implementations land in task_04–06) ────────
 
 
 def extraction_agent_node(state: InvestigationState) -> dict[str, Any]:
@@ -197,19 +339,13 @@ def run_investigation(
     prior: ExtractedEvidence,
     *,
     agent_run_id: str,
+    judge: Layer3JudgeFunc | None = None,
 ) -> InvestigationState:
     """Run one Layer-3 investigation end-to-end.
 
     Builds the initial ``InvestigationState`` from the failing
     ``AttributeCheck`` plus current + prior quarter evidence, invokes
     the compiled graph, and returns the terminal state.
-
-    The privateDocs sketch listed ``(check, prior)`` — but the state
-    schema needs both ``current_quarter_evidence`` and
-    ``prior_quarter_evidence`` and the supervisor has to know which
-    quarter to anchor on, so the actual signature takes ``current``
-    explicitly. ``engagement_id`` is read off ``current`` (cross-checked
-    against ``prior``) — one less argument to keep in sync.
 
     Parameters
     ----------
@@ -227,6 +363,12 @@ def run_investigation(
         Per-sweep identifier shared across every investigation in the
         same run. Joins to ``gold.cost_telemetry`` for sweep-level
         cost roll-ups (task_08).
+    judge
+        Optional Layer-3 judge. Called once when ``final_narrative``
+        first lands and its verdict + confidence feed the supervisor's
+        conclude-vs-escalate gate. ``None`` (the default) is fail-closed
+        — any narrative-bearing state routes to escalate. Task_07 wires
+        the real LLM-backed judge through this hook.
 
     Raises
     ------
@@ -236,10 +378,12 @@ def run_investigation(
 
     Notes
     -----
-    Task_02 nodes are stubs: every invocation traverses
-    ``START → supervisor → END`` and the returned state equals the
-    initial state with ``status="investigating"`` unchanged. Tests
-    for terminal-state correctness arrive with task_03+.
+    With sub-agents still stubbed (task_04–06 pending), an invocation
+    that triggers extraction routes ``supervisor → extraction (stub)``
+    three times, then escalates at the iteration cap. The terminal
+    ``status`` is ``"escalated_to_human"`` and the ``investigation_log``
+    carries three supervisor entries. Real terminal-state shapes land
+    as those sub-agents fill in.
     """
     if not is_layer3_eligible(check):
         raise ValueError(
@@ -280,13 +424,18 @@ def run_investigation(
         "extraction_findings": None,
         "validation_findings": None,
         "final_narrative": None,
+        "judge_verdict": None,
+        "judge_confidence": None,
         "confidence_score": 0.0,
         "iterations_used": 0,
         "status": "investigating",
     }
 
+    configurable: dict[str, Any] = {"thread_id": investigation_run_id}
+    if judge is not None:
+        configurable[LAYER3_JUDGE_CONFIG_KEY] = judge
     config: dict[str, Any] = {
-        "configurable": {"thread_id": investigation_run_id},
+        "configurable": configurable,
         "recursion_limit": 10,
     }
     # LangGraph 1.x ``invoke`` overloads don't match a plain TypedDict
@@ -301,6 +450,10 @@ def run_investigation(
 
 
 __all__ = [
+    "CONFIDENCE_THRESHOLD",
+    "LAYER3_JUDGE_CONFIG_KEY",
+    "MAX_ITERATIONS",
+    "Layer3JudgeFunc",
     "compiled_graph",
     "extraction_agent_node",
     "is_layer3_eligible",

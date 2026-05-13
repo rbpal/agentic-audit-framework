@@ -125,6 +125,13 @@ def test_compiled_graph_draws_mermaid() -> None:
 
 
 def test_run_investigation_billing_rate_change_happy_path() -> None:
+    """End-to-end with task_03 supervisor + task_02 sub-agent stubs.
+
+    The supervisor routes to extraction (findings still None after
+    each stub return) for three iterations, then hits the cap and
+    escalates. status flips to escalated_to_human; the trace carries
+    three supervisor entries. Scope fields are preserved through the
+    invocation."""
     check = AttributeCheck(control_id="DC-9", attribute_id="D", status="fail")
     result = run_investigation(
         check=check,
@@ -139,10 +146,9 @@ def test_run_investigation_billing_rate_change_happy_path() -> None:
     assert result["engagement_id"] == "eng-1"
     assert result["agent_run_id"] == "sweep-001"
     assert result["investigation_run_id"].startswith("inv-")
-    # Stub nodes — status stays at the initial value. task_03 fills in
-    # the real terminal-state transition.
-    assert result["status"] == "investigating"
-    assert result["investigation_log"] == []
+    assert result["status"] == "escalated_to_human"
+    assert result["iterations_used"] == 3
+    assert len(result["investigation_log"]) == 3
     assert result["extraction_findings"] is None
 
 
@@ -157,6 +163,7 @@ def test_run_investigation_variance_plausibility_happy_path() -> None:
     assert result["exception_type"] == "variance_plausibility"
     assert result["control_id"] == "DC-2"
     assert result["attribute_id"] == "B"
+    assert result["status"] == "escalated_to_human"
 
 
 def test_run_investigation_rejects_ineligible_check() -> None:
