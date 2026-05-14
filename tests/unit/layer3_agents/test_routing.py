@@ -223,10 +223,15 @@ def test_concludes_at_exact_confidence_threshold() -> None:
     assert route_from_supervisor(state) == "conclude"
 
 
-def test_escalates_after_3_iterations() -> None:
-    """Iteration cap fires regardless of findings state. Even if
-    every sub-agent succeeded, hitting ``MAX_ITERATIONS`` short-
-    circuits to escalate — bounds the cost ceiling per investigation.
+def test_iteration_cap_does_not_block_terminal_conclude() -> None:
+    """Iteration cap only fires when the supervisor would dispatch to a
+    sub-agent. With all three findings populated and a passing judge,
+    the supervisor concludes regardless of ``iterations_used`` — the
+    happy path's natural count (3 sub-agent dispatches → ``iter=MAX``)
+    must not block the conclude verdict on the supervisor's 4th visit.
+
+    Spec reference: privateDocs/step_07_layer3_multiagent.md task_07
+    test_happy_path_concludes ("≤3 iterations with status=concluded").
     """
     state = _base_state(
         iterations_used=MAX_ITERATIONS,
@@ -236,12 +241,14 @@ def test_escalates_after_3_iterations() -> None:
         confidence_score=0.99,
         judge_verdict="pass",
     )
-    assert route_from_supervisor(state) == "escalate"
+    assert route_from_supervisor(state) == "conclude"
 
 
-def test_iteration_cap_precedes_findings_check() -> None:
-    """Cap is the first rule — checked even when no sub-agent has run.
-    Catches the regression where a refactor inverts the rule order."""
+def test_iteration_cap_fires_on_sub_agent_intent_only() -> None:
+    """When the supervisor would dispatch to a sub-agent (some
+    finding still missing) AND ``iterations_used >= MAX_ITERATIONS``,
+    the cap routes to escalate. Catches the regression where a
+    refactor inverts the rule order."""
     state = _base_state(iterations_used=MAX_ITERATIONS)
     assert route_from_supervisor(state) == "escalate"
 
@@ -253,10 +260,15 @@ def _config(judge: Any = None) -> RunnableConfig:
     return {"configurable": {LAYER3_JUDGE_CONFIG_KEY: judge} if judge else {}}
 
 
-def test_supervisor_node_increments_iterations_used() -> None:
+def test_supervisor_node_does_not_increment_iterations_used() -> None:
+    """The supervisor no longer owns the iteration counter — sub-agent
+    nodes increment it. This keeps the route the supervisor decided
+    in lockstep with the route ``route_from_supervisor`` re-derives,
+    which both see the same ``iterations_used`` and produce the same
+    answer (no pre-vs-post-increment mismatch)."""
     state = _base_state(iterations_used=0)
     updates = supervisor_node(state, _config())
-    assert updates["iterations_used"] == 1
+    assert "iterations_used" not in updates
 
 
 def test_supervisor_node_appends_one_log_entry_naming_destination() -> None:
@@ -267,7 +279,9 @@ def test_supervisor_node_appends_one_log_entry_naming_destination() -> None:
     updates = supervisor_node(state, _config())
     log = updates["investigation_log"]
     assert len(log) == 1
-    assert log[0].iteration == 1
+    # iteration field reflects the pre-supervisor counter (sub-agent
+    # nodes own incrementing); for a freshly initialised state that's 0.
+    assert log[0].iteration == 0
     assert log[0].actor == "supervisor"
     assert log[0].action == "route_to_extraction"
 

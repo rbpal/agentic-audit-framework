@@ -496,13 +496,19 @@ def test_validation_agent_node_appends_trace_entry() -> None:
     assert step.action == "emitted_validation_findings"
 
 
-def test_validation_agent_node_no_op_when_no_agent_injected() -> None:
-    """Fail-closed default — no agent => no-op. The supervisor will
-    loop until the iteration cap fires and escalate cleanly."""
+def test_validation_agent_node_no_op_emits_iter_increment_and_log_entry() -> None:
+    """Fail-closed default — no agent injected. The node still emits a
+    state delta (iter increment + ``no_agent_injected_no_op`` log
+    entry) so the LangGraph super-step engine doesn't declare early
+    convergence on a no-state-change return."""
     extraction = ExtractionFindings(confidence=0.9, ima_amendment_found=True)
     state = _state("billing_rate_change", "DC-9", "D", extraction=extraction)
     updates = validation_agent_node(state, _config())
-    assert updates == {}
+    assert updates["iterations_used"] == state["iterations_used"] + 1  # type: ignore[operator]
+    step = updates["investigation_log"][0]
+    assert step.actor == "validation_agent"
+    assert step.action == "no_agent_injected_no_op"
+    assert "validation_findings" not in updates
 
 
 # ── End-to-end via run_investigation ─────────────────────────────────
