@@ -127,11 +127,17 @@ def test_compiled_graph_draws_mermaid() -> None:
 def test_run_investigation_billing_rate_change_happy_path() -> None:
     """End-to-end with task_03 supervisor + task_02 sub-agent stubs.
 
-    The supervisor routes to extraction (findings still None after
-    each stub return) for three iterations, then hits the cap and
-    escalates. status flips to escalated_to_human; the trace carries
-    three supervisor entries. Scope fields are preserved through the
-    invocation."""
+    The supervisor routes to extraction (no agent injected → no-op)
+    for three iterations, then hits the cap and escalates. status
+    flips to escalated_to_human. The trace carries 7 entries: 4
+    supervisor visits (3 dispatch + 1 escalate) interleaved with 3
+    sub-agent no-op visits. Scope fields are preserved through the
+    invocation.
+
+    The 7-entry log is expected: each supervisor visit AND each
+    sub-agent visit emits one InvestigationStep. The sub-agent visits
+    log a ``no_agent_injected_no_op`` action so the trace records why
+    the cap fired (no agent wired, not the agent declining)."""
     check = AttributeCheck(control_id="DC-9", attribute_id="D", status="fail")
     result = run_investigation(
         check=check,
@@ -148,8 +154,12 @@ def test_run_investigation_billing_rate_change_happy_path() -> None:
     assert result["investigation_run_id"].startswith("inv-")
     assert result["status"] == "escalated_to_human"
     assert result["iterations_used"] == 3
-    assert len(result["investigation_log"]) == 3
+    assert len(result["investigation_log"]) == 7
     assert result["extraction_findings"] is None
+    # Last entry is the supervisor's escalate decision
+    last = result["investigation_log"][-1]
+    assert last.actor == "supervisor"
+    assert last.action == "route_to_escalate"
 
 
 def test_run_investigation_variance_plausibility_happy_path() -> None:

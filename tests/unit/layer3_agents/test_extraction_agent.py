@@ -355,12 +355,20 @@ def test_extraction_agent_node_appends_trace_entry() -> None:
     assert step.action == "emitted_extraction_findings"
 
 
-def test_extraction_agent_node_no_op_when_no_agent_injected() -> None:
-    """Fail-closed default — no agent => no-op. The supervisor will
-    loop until the iteration cap fires and escalate cleanly."""
+def test_extraction_agent_node_no_op_emits_iter_increment_and_log_entry() -> None:
+    """Fail-closed default — no agent injected. The node still emits a
+    state delta (iter increment + ``no_agent_injected_no_op`` log
+    entry) so the LangGraph super-step engine doesn't declare early
+    convergence on a no-state-change return. The supervisor's
+    iteration cap is what eventually escalates the loop."""
     state = _state("billing_rate_change", "DC-9", "D")
     updates = extraction_agent_node(state, _config())
-    assert updates == {}
+    assert updates["iterations_used"] == state["iterations_used"] + 1  # type: ignore[operator]
+    assert len(updates["investigation_log"]) == 1
+    step = updates["investigation_log"][0]
+    assert step.actor == "extraction_agent"
+    assert step.action == "no_agent_injected_no_op"
+    assert "extraction_findings" not in updates
 
 
 # ── End-to-end via run_investigation ─────────────────────────────────

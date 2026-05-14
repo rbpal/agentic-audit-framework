@@ -1,12 +1,12 @@
 """LangGraph ``StateGraph`` for the Layer 3 supervisor.
 
 This module wires the four-node graph, exposes ``run_investigation``,
-and ships the rule-based supervisor + conditional-edge router. Only
-the narrative sub-agent is still a stub:
+and ships the rule-based supervisor + conditional-edge router. All
+three sub-agent wrappers are now real:
 
-- task_04 — ``extraction_agent_node`` (real, wraps ``ExtractionAgent``)
-- task_05 — ``validation_agent_node`` (real, wraps ``ValidationAgent``)
-- task_06 — ``narrative_agent_node`` (stub)
+- task_04 — ``extraction_agent_node`` (wraps ``ExtractionAgent``)
+- task_05 — ``validation_agent_node`` (wraps ``ValidationAgent``)
+- task_06 — ``narrative_agent_node`` (wraps ``NarrativeAgent``)
 
 Topology (matches ``privateDocs/step_07_layer3_multiagent.md`` task_02)::
 
@@ -56,6 +56,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from agentic_audit.layer3_agents.extraction_agent import ExtractionAgent
+from agentic_audit.layer3_agents.narrative_agent import NarrativeAgent
 from agentic_audit.layer3_agents.state import (
     ExceptionType,
     InvestigationState,
@@ -101,6 +102,10 @@ LAYER3_EXTRACTION_AGENT_CONFIG_KEY: str = "layer3_extraction_agent"
 # extraction key — fail-closed when absent (the supervisor keeps
 # routing to validation until the cap fires).
 LAYER3_VALIDATION_AGENT_CONFIG_KEY: str = "layer3_validation_agent"
+
+# Injection key for the Narrative sub-agent. Fail-closed when absent
+# (the supervisor keeps routing to narrative until the cap fires).
+LAYER3_NARRATIVE_AGENT_CONFIG_KEY: str = "layer3_narrative_agent"
 
 # ── Layer-3 judge protocol ───────────────────────────────────────────
 
@@ -171,6 +176,9 @@ def _infer_exception_type(check: AttributeCheck) -> ExceptionType:
 # ── Routing + supervisor (task_03) ───────────────────────────────────
 
 
+_SUB_AGENT_ROUTES: frozenset[str] = frozenset({"extraction", "validation", "narrative"})
+
+
 def _decide_route(state: InvestigationState) -> str:
     """Pure routing decision over a single state snapshot.
 
@@ -180,25 +188,51 @@ def _decide_route(state: InvestigationState) -> str:
     edge). Sharing this function guarantees the log entry, the
     persisted ``status``, and the LangGraph edge cannot disagree.
 
-    The fail-closed default on the judge gate is deliberate: a
-    narrative-bearing state with a missing or non-pass ``judge_verdict``
-    routes to ``"escalate"`` rather than ``"conclude"``. Confident-but-
-    unjudged narratives must not reach gold.
+    Routing semantics:
+
+    1. **Determine intent first** — what would the supervisor do
+       absent any cap. The intent is one of: a sub-agent dispatch
+       (because some output is still missing), or a terminal decision
+       (because all three sub-agent outputs are present).
+    2. **Cap-check sub-agent intents only.** If the intent is a
+       sub-agent dispatch and ``iterations_used >= MAX_ITERATIONS``,
+       override to ``"escalate"``. Terminal intents (``"conclude"`` /
+       ``"escalate"``) are NOT cap-gated — a successful 3-iteration
+       happy path concludes correctly without the cap blocking it.
+    3. **Judge gate fails closed** — terminal "conclude" intent
+       requires both ``confidence_score >= CONFIDENCE_THRESHOLD`` AND
+       ``judge_verdict == "pass"``. A narrative-bearing state with a
+       missing or non-pass judge verdict routes to ``"escalate"``.
+       Confident-but-unjudged narratives must not reach gold.
+
+    This ordering (intent → cap) was a task_03 latent bug surfaced by
+    task_06's happy-path e2e test: with the cap-first ordering, the
+    iteration cap fired on supervisor visit 4 (the visit that
+    *would* have concluded) because each sub-agent dispatch counted
+    one supervisor visit and the conclude visit pushed iter past the
+    ceiling. Reordering preserves the cap's purpose (bound runaway
+    sub-agent loops) without trapping the happy path.
     """
+    if state.get("extraction_findings") is None:
+        intent = "extraction"
+    elif state.get("validation_findings") is None:
+        intent = "validation"
+    elif state.get("final_narrative") is None:
+        intent = "narrative"
+    else:
+        # Terminal decision branch — all three sub-agent outputs in
+        # hand. The cap does not gate this branch.
+        if (
+            state.get("confidence_score", 0.0) >= CONFIDENCE_THRESHOLD
+            and state.get("judge_verdict") == "pass"
+        ):
+            return "conclude"
+        return "escalate"
+
+    # Sub-agent dispatch intent — apply the cap.
     if state.get("iterations_used", 0) >= MAX_ITERATIONS:
         return "escalate"
-    if state.get("extraction_findings") is None:
-        return "extraction"
-    if state.get("validation_findings") is None:
-        return "validation"
-    if state.get("final_narrative") is None:
-        return "narrative"
-    if (
-        state.get("confidence_score", 0.0) >= CONFIDENCE_THRESHOLD
-        and state.get("judge_verdict") == "pass"
-    ):
-        return "conclude"
-    return "escalate"
+    return intent
 
 
 # Map of route → terminal Layer3Status. Only conclude/escalate
@@ -218,18 +252,24 @@ def supervisor_node(
 
     Side-effects per visit:
 
-    1. Increments ``iterations_used``.
-    2. If a ``final_narrative`` just landed and the judge gate has not
+    1. If a ``final_narrative`` just landed and the judge gate has not
        run yet, calls the injected ``Layer3JudgeFunc`` from ``config``
        and writes ``judge_verdict`` + ``judge_confidence`` into state.
-    3. Computes the route via ``_decide_route`` against the post-update
-       state view.
-    4. Appends one ``InvestigationStep`` to ``investigation_log`` naming
+    2. Computes the route via ``_decide_route`` against the
+       post-judge-gate state view.
+    3. Appends one ``InvestigationStep`` to ``investigation_log`` naming
        the actual destination — the operator.add reducer concatenates
        across visits, so the full chain survives.
-    5. On a terminal route (``"conclude"`` / ``"escalate"``) sets
+    4. On a terminal route (``"conclude"`` / ``"escalate"``) sets
        ``status`` accordingly. Sub-agent dispatch leaves status as
        ``"investigating"``.
+
+    The supervisor does **NOT** increment ``iterations_used`` — that
+    counter is owned by the sub-agent nodes (incremented on every
+    invocation, including the no-agent-injected no-op path). This
+    keeps the route the supervisor decided in lockstep with the route
+    ``route_from_supervisor`` re-derives via ``_decide_route``: both
+    see the same ``iterations_used`` and produce the same answer.
 
     Errors raised by the judge propagate — task_07's real Layer-3 judge
     handles its own retries + uncertain-fallback (same posture as the
@@ -237,8 +277,6 @@ def supervisor_node(
     business.
     """
     updates: dict[str, Any] = {}
-    new_iter = state.get("iterations_used", 0) + 1
-    updates["iterations_used"] = new_iter
 
     if state.get("final_narrative") is not None and state.get("judge_verdict") is None:
         judge = (config.get("configurable") or {}).get(LAYER3_JUDGE_CONFIG_KEY)
@@ -248,14 +286,15 @@ def supervisor_node(
             updates["judge_verdict"] = judgment.verdict
             updates["judge_confidence"] = judgment.confidence
 
-    # Decide against the post-update view so the iteration-cap test
-    # and the judge-gate check both see the latest counters / fields.
-    future_state = cast(InvestigationState, {**state, **updates})
-    route = _decide_route(future_state)
+    # Decide against the post-judge-gate view so the conclude-vs-
+    # escalate check sees the latest verdict.
+    pre_route_state = cast(InvestigationState, {**state, **updates})
+    route = _decide_route(pre_route_state)
 
+    log_iteration = state.get("iterations_used", 0)
     updates["investigation_log"] = [
         InvestigationStep(
-            iteration=new_iter,
+            iteration=log_iteration,
             actor="supervisor",
             action=f"route_to_{route}",
             timestamp=datetime.now(UTC),
@@ -276,7 +315,67 @@ def route_from_supervisor(state: InvestigationState) -> str:
     return _decide_route(state)
 
 
-# ── Sub-agent nodes (validation + narrative still stubs) ─────────────
+# ── Sub-agent nodes ──────────────────────────────────────────────────
+
+
+def _no_agent_updates(state: InvestigationState, actor: str) -> dict[str, Any]:
+    """Build the state delta a sub-agent node returns when no agent is
+    injected.
+
+    Two side-effects:
+
+    1. ``iterations_used`` increments — sub-agent nodes own the
+       counter. Without this, LangGraph's super-step engine sees no
+       state delta when extraction returns from a no-op node and
+       terminates the graph early (before the supervisor can apply
+       the cap and route to escalate).
+    2. A ``no_agent_injected_no_op`` trace entry is appended so the
+       investigation log records the empty visit — operators reading
+       the trace can see the cap was hit because no agent was wired,
+       not because the agent declined to populate findings.
+    """
+    new_iter = state.get("iterations_used", 0) + 1
+    return {
+        "iterations_used": new_iter,
+        "investigation_log": [
+            InvestigationStep(
+                iteration=new_iter,
+                actor=actor,
+                action="no_agent_injected_no_op",
+                timestamp=datetime.now(UTC),
+            )
+        ],
+    }
+
+
+def _agent_ran_updates(
+    state: InvestigationState,
+    actor: str,
+    action: str,
+    *,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the state delta a sub-agent node returns when its agent
+    actually ran. Increments ``iterations_used`` (same counter
+    semantics as the no-op branch — the iteration counts the visit,
+    not its outcome) and appends a trace entry naming the actor +
+    action. ``extra`` carries the agent's output payload (e.g.
+    ``{"extraction_findings": findings}``)."""
+    new_iter = state.get("iterations_used", 0) + 1
+    updates: dict[str, Any] = {
+        "iterations_used": new_iter,
+        "investigation_log": [
+            InvestigationStep(
+                iteration=new_iter,
+                actor=actor,
+                action=action,
+                timestamp=datetime.now(UTC),
+            )
+        ],
+    }
+    if extra:
+        updates.update(extra)
+    return updates
 
 
 def extraction_agent_node(
@@ -288,10 +387,12 @@ def extraction_agent_node(
     Reads an ``ExtractionAgent`` instance from
     ``config["configurable"][LAYER3_EXTRACTION_AGENT_CONFIG_KEY]``.
     When present, invokes it against the live state and writes
-    ``extraction_findings`` + a trace entry. When absent, returns ``{}``
-    — same fail-closed posture as the judge gate: the supervisor will
-    loop until the iteration cap fires, leaving a clear trace of
-    repeated routing-to-extraction attempts.
+    ``extraction_findings`` + a trace entry. When absent, emits a
+    ``no_agent_injected_no_op`` trace entry — same fail-closed posture
+    as the judge gate (the supervisor will loop until the iteration
+    cap fires), but the trace entry keeps the LangGraph super-step
+    engine from declaring early convergence on a no-state-delta
+    return.
 
     The Step 8 tools the agent binds are placeholders today
     (``tools.py`` — canned empty payloads). Real tool bodies land in
@@ -300,20 +401,15 @@ def extraction_agent_node(
     """
     agent_obj = (config.get("configurable") or {}).get(LAYER3_EXTRACTION_AGENT_CONFIG_KEY)
     if agent_obj is None:
-        return {}
+        return _no_agent_updates(state, "extraction_agent")
     agent = cast(ExtractionAgent, agent_obj)
     findings = agent.invoke(state)
-    return {
-        "extraction_findings": findings,
-        "investigation_log": [
-            InvestigationStep(
-                iteration=state.get("iterations_used", 0),
-                actor="extraction_agent",
-                action="emitted_extraction_findings",
-                timestamp=datetime.now(UTC),
-            )
-        ],
-    }
+    return _agent_ran_updates(
+        state,
+        "extraction_agent",
+        "emitted_extraction_findings",
+        extra={"extraction_findings": findings},
+    )
 
 
 def validation_agent_node(
@@ -338,27 +434,61 @@ def validation_agent_node(
     """
     agent_obj = (config.get("configurable") or {}).get(LAYER3_VALIDATION_AGENT_CONFIG_KEY)
     if agent_obj is None:
-        return {}
+        return _no_agent_updates(state, "validation_agent")
     agent = cast(ValidationAgent, agent_obj)
     findings = agent.invoke(state)
-    return {
-        "validation_findings": findings,
-        "investigation_log": [
-            InvestigationStep(
-                iteration=state.get("iterations_used", 0),
-                actor="validation_agent",
-                action="emitted_validation_findings",
-                timestamp=datetime.now(UTC),
-            )
-        ],
-    }
+    return _agent_ran_updates(
+        state,
+        "validation_agent",
+        "emitted_validation_findings",
+        extra={"validation_findings": findings},
+    )
 
 
-def narrative_agent_node(state: InvestigationState) -> dict[str, Any]:
-    """Narrative sub-agent stub — task_06 ships the
-    ``NarrativeGenerator`` + ``FactChecker`` reuse path with the
-    exception-narrative prompt variants."""
-    return {}
+def narrative_agent_node(
+    state: InvestigationState,
+    config: RunnableConfig,
+) -> dict[str, Any]:
+    """Run the Narrative sub-agent if one is injected; otherwise no-op.
+
+    Reads a ``NarrativeAgent`` instance from
+    ``config["configurable"][LAYER3_NARRATIVE_AGENT_CONFIG_KEY]``.
+    When present, invokes it against the live state (which carries
+    both extraction + validation findings the narrative prompt grounds
+    against), writes ``final_narrative`` + a trace entry + updates
+    ``confidence_score`` from the validation finding's confidence so
+    the supervisor's conclude-vs-escalate gate can compare against
+    ``CONFIDENCE_THRESHOLD``.
+
+    ``confidence_score`` choice: ``validation_findings.confidence`` is
+    the load-bearing signal for "should this exception be acted on
+    automatically". Extraction confidence reflects how well we located
+    the facts; validation confidence reflects how trustworthy the
+    authorise/reject verdict is, which is what the supervisor's
+    conclude gate is gating on. A high-confidence negative validation
+    (e.g. fast-path no-document at 0.9) correctly concludes with an
+    ``ExceptionNarrative.recommendation="ESCALATE"`` rather than
+    routing to the system-failure "escalate" terminal.
+
+    When the validation finding is missing (defensive — shouldn't
+    happen if the supervisor's routing is correct), the field is left
+    at its prior value.
+    """
+    agent_obj = (config.get("configurable") or {}).get(LAYER3_NARRATIVE_AGENT_CONFIG_KEY)
+    if agent_obj is None:
+        return _no_agent_updates(state, "narrative_agent")
+    agent = cast(NarrativeAgent, agent_obj)
+    narrative = agent.invoke(state)
+    extra: dict[str, Any] = {"final_narrative": narrative}
+    validation = state.get("validation_findings")
+    if validation is not None:
+        extra["confidence_score"] = validation.confidence
+    return _agent_ran_updates(
+        state,
+        "narrative_agent",
+        "emitted_final_narrative",
+        extra=extra,
+    )
 
 
 # ── Compiled graph ───────────────────────────────────────────────────
@@ -418,6 +548,7 @@ def run_investigation(
     judge: Layer3JudgeFunc | None = None,
     extraction_agent: ExtractionAgent | None = None,
     validation_agent: ValidationAgent | None = None,
+    narrative_agent: NarrativeAgent | None = None,
 ) -> InvestigationState:
     """Run one Layer-3 investigation end-to-end.
 
@@ -462,6 +593,17 @@ def run_investigation(
         the node as a no-op — the supervisor keeps routing to
         validation until the iteration cap fires. Production wires
         ``ValidationAgent.from_env()``.
+    narrative_agent
+        Optional Narrative sub-agent. When present, the supervisor's
+        ``narrative_agent_node`` invokes it once to populate
+        ``final_narrative`` (≤200-word ``ExceptionNarrative`` with
+        ``recommendation ∈ {ACCEPT, ESCALATE}``) and propagate the
+        validation finding's confidence into ``confidence_score`` so
+        the supervisor's conclude-vs-escalate gate can compare against
+        ``CONFIDENCE_THRESHOLD``. ``None`` (the default) leaves the
+        node as a no-op — the supervisor keeps routing to narrative
+        until the iteration cap fires. Production wires
+        ``NarrativeAgent.from_env()``.
 
     Raises
     ------
@@ -531,6 +673,8 @@ def run_investigation(
         configurable[LAYER3_EXTRACTION_AGENT_CONFIG_KEY] = extraction_agent
     if validation_agent is not None:
         configurable[LAYER3_VALIDATION_AGENT_CONFIG_KEY] = validation_agent
+    if narrative_agent is not None:
+        configurable[LAYER3_NARRATIVE_AGENT_CONFIG_KEY] = narrative_agent
     config: dict[str, Any] = {
         "configurable": configurable,
         "recursion_limit": 10,
@@ -550,6 +694,7 @@ __all__ = [
     "CONFIDENCE_THRESHOLD",
     "LAYER3_EXTRACTION_AGENT_CONFIG_KEY",
     "LAYER3_JUDGE_CONFIG_KEY",
+    "LAYER3_NARRATIVE_AGENT_CONFIG_KEY",
     "LAYER3_VALIDATION_AGENT_CONFIG_KEY",
     "MAX_ITERATIONS",
     "Layer3JudgeFunc",
