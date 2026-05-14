@@ -58,6 +58,7 @@ from langgraph.graph.state import CompiledStateGraph
 from agentic_audit.layer3_agents.extraction_agent import ExtractionAgent
 from agentic_audit.layer3_agents.narrative_agent import NarrativeAgent
 from agentic_audit.layer3_agents.state import (
+    ExceptionNarrative,
     ExceptionType,
     InvestigationState,
     InvestigationStep,
@@ -687,7 +688,77 @@ def run_investigation(
     # single-file pre-commit run; one mode sees the overload error,
     # the other doesn't.
     result = compiled_graph.invoke(initial_state, config=config)  # type: ignore[call-overload,unused-ignore]
-    return cast(InvestigationState, result)
+    final_state = cast(InvestigationState, result)
+    return _ensure_terminal_narrative(final_state)
+
+
+# ── Degraded escalation narrative (Step 7 task_07) ──────────────────
+
+
+# Canned text for the degraded-escalation narrative. Verbatim from
+# privateDocs/step_07_layer3_multiagent.md task_07. Stable so
+# downstream consumers (gold.layer3_decisions readers, the human-
+# review UI) can detect this branch by exact-match without parsing
+# variable LLM-emitted text.
+_DEGRADED_ESCALATION_NARRATIVE_TEXT: str = (
+    "Automated investigation could not reach sufficient confidence; human review required."
+)
+
+
+def _build_degraded_escalation_narrative() -> ExceptionNarrative:
+    """Build the sentinel ``ExceptionNarrative`` for terminal escalates
+    that never reached the narrative sub-agent.
+
+    Two cases produce a final state with ``status="escalated_to_human"``
+    AND ``final_narrative=None``:
+
+    1. The iteration cap fired before extraction or validation
+       populated their findings (e.g. no agent injected, agent failure).
+    2. Validation populated but supervisor escalated before narrative
+       (extracted findings + validation present, but cap still fired
+       because narrative agent was missing or kept failing).
+
+    The narrative_agent's own ``_fallback_escalate`` covers a third
+    case: narrative agent invoked but LLM/fact-check failed twice.
+    That fallback embeds a diagnostic reason in the text. This
+    helper produces the *clean* canned text — same shape, no
+    diagnostic noise — for the two cases above where no LLM was ever
+    asked to write a narrative.
+
+    Both shapes ship to ``gold.layer3_decisions`` so every terminal
+    state writes a complete row. The ``recommendation="ESCALATE"`` +
+    empty ``citations`` together signal the human-review path; the
+    ``investigation_log`` (also persisted) carries the supervisor's
+    routing trace for the reviewer to read.
+    """
+    return ExceptionNarrative(
+        narrative_text=_DEGRADED_ESCALATION_NARRATIVE_TEXT,
+        citations=[],
+        recommendation="ESCALATE",
+        word_count=len(_DEGRADED_ESCALATION_NARRATIVE_TEXT.split()),
+    )
+
+
+def _ensure_terminal_narrative(state: InvestigationState) -> InvestigationState:
+    """Post-invoke wrap — guarantees a terminal escalate state always
+    carries a ``final_narrative``.
+
+    No-op if ``status != "escalated_to_human"`` (concluded paths
+    always have a real narrative from the narrative agent).
+    No-op if ``final_narrative`` is already populated (the narrative
+    agent ran and either succeeded or invoked its own fallback).
+
+    Otherwise: set ``final_narrative`` to the canned degraded
+    escalation narrative. Mutating-in-place is safe because the
+    final state is a fresh dict returned from LangGraph's invoke;
+    the caller never sees it before this wrap runs.
+    """
+    if state.get("status") != "escalated_to_human":
+        return state
+    if state.get("final_narrative") is not None:
+        return state
+    state["final_narrative"] = _build_degraded_escalation_narrative()
+    return state
 
 
 __all__ = [
