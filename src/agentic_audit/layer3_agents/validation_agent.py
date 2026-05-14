@@ -40,7 +40,7 @@ import logging
 import os
 from pathlib import Path
 from string import Template
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
@@ -54,6 +54,8 @@ from agentic_audit.layer3_agents.state import (
     InvestigationState,
     ValidationFindings,
 )
+from agentic_audit.models.telemetry import CallUsage, UsageRecorder
+from agentic_audit.observability import traced_function
 
 if TYPE_CHECKING:
     from openai import AzureOpenAI
@@ -105,6 +107,7 @@ class ValidationAgent:
         prompt_version: str = "v1.0",
         client: AzureOpenAI | None = None,
         api_version: str = AZURE_OPENAI_API_VERSION,
+        usage_recorder: UsageRecorder | None = None,
     ) -> None:
         """Build a Validation sub-agent.
 
@@ -115,6 +118,14 @@ class ValidationAgent:
         resolves to the per-exception-type prompt files — ``"v1.0"``
         reads ``validation_v1_0_billing_rate_change.txt`` and
         ``validation_v1_0_variance_plausibility.txt``.
+
+        ``usage_recorder`` is optional; when supplied, every billed
+        ``chat.completions.create`` call records its token usage on
+        the recorder. The supervisor's ``run_investigation`` constructs
+        a fresh recorder per call and passes it through; the cost-
+        telemetry row is built from the recorder's snapshot at exit.
+        Fast-path validations (no LLM call) leave the recorder
+        untouched.
         """
         self._endpoint = endpoint
         self._deployment = deployment
@@ -125,6 +136,7 @@ class ValidationAgent:
             if client is not None
             else _build_azure_openai_client(endpoint=endpoint, api_version=api_version)
         )
+        self._usage_recorder = usage_recorder
 
     @classmethod
     def from_env(
@@ -133,6 +145,7 @@ class ValidationAgent:
         deployment: str = "gpt-4o",
         prompt_version: str = "v1.0",
         endpoint_env_var: str = "AZURE_OPENAI_ENDPOINT",
+        usage_recorder: UsageRecorder | None = None,
     ) -> ValidationAgent:
         """Build from ``AZURE_OPENAI_ENDPOINT``. Same env contract as
         ``Judge.from_env`` and ``ExtractionAgent.from_env``."""
@@ -148,6 +161,7 @@ class ValidationAgent:
             endpoint=endpoint,
             deployment=deployment,
             prompt_version=prompt_version,
+            usage_recorder=usage_recorder,
         )
 
     @property
@@ -164,6 +178,7 @@ class ValidationAgent:
 
     # ── Production entry point ──────────────────────────────────────
 
+    @traced_function("layer3.validation_agent.invoke")
     def invoke(self, state: InvestigationState) -> ValidationFindings:
         """Run one validation pass against the live investigation state.
 
@@ -308,6 +323,7 @@ class ValidationAgent:
                     max_tokens=_MAX_TOKENS,
                     response_format={"type": "json_object"},
                 )
+                self._record_usage_if_present(response)
             except Exception as exc:  # pragma: no cover — network/auth path
                 if attempt == 1:
                     logger.warning(
@@ -358,6 +374,30 @@ class ValidationAgent:
 
         # Unreachable — both attempts either return or fall through.
         raise RuntimeError("unreachable: _invoke_with_fallback exhausted both attempts")
+
+    def _record_usage_if_present(self, response: Any) -> None:
+        """Record per-call token usage on the recorder if one is wired.
+
+        Same shape as ``layer2_narrative.Judge._record_usage_if_present``:
+        recording fires after every billed API call regardless of
+        parse outcome — token usage is what the cloud meters, and a
+        malformed-JSON response was still a billed call.
+        """
+        if self._usage_recorder is None:
+            return
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        prompt_tokens = getattr(usage, "prompt_tokens", None)
+        completion_tokens = getattr(usage, "completion_tokens", None)
+        if prompt_tokens is None or completion_tokens is None:
+            return
+        self._usage_recorder.record(
+            CallUsage(
+                prompt_tokens=int(prompt_tokens),
+                completion_tokens=int(completion_tokens),
+            )
+        )
 
     @staticmethod
     def _fallback_to_unauthorized(reason: str) -> ValidationFindings:
