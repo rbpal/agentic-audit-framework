@@ -1,12 +1,12 @@
 """LangGraph ``StateGraph`` for the Layer 3 supervisor.
 
 This module wires the four-node graph, exposes ``run_investigation``,
-and ships the rule-based supervisor + conditional-edge router. The
-extraction / validation / narrative sub-agents are still stubs:
+and ships the rule-based supervisor + conditional-edge router. Only
+the narrative sub-agent is still a stub:
 
-- task_04 — ``extraction_agent_node``
-- task_05 — ``validation_agent_node``
-- task_06 — ``narrative_agent_node``
+- task_04 — ``extraction_agent_node`` (real, wraps ``ExtractionAgent``)
+- task_05 — ``validation_agent_node`` (real, wraps ``ValidationAgent``)
+- task_06 — ``narrative_agent_node`` (stub)
 
 Topology (matches ``privateDocs/step_07_layer3_multiagent.md`` task_02)::
 
@@ -61,6 +61,7 @@ from agentic_audit.layer3_agents.state import (
     InvestigationState,
     InvestigationStep,
 )
+from agentic_audit.layer3_agents.validation_agent import ValidationAgent
 from agentic_audit.models.evidence import (
     LAYER3_ATTRIBUTES_PER_CONTROL,
     AttributeCheck,
@@ -95,6 +96,11 @@ LAYER3_JUDGE_CONFIG_KEY: str = "layer3_judge"
 # When absent, ``extraction_agent_node`` returns ``{}`` (stub
 # behaviour) and the supervisor iterates until the cap fires.
 LAYER3_EXTRACTION_AGENT_CONFIG_KEY: str = "layer3_extraction_agent"
+
+# Injection key for the Validation sub-agent. Same pattern as the
+# extraction key — fail-closed when absent (the supervisor keeps
+# routing to validation until the cap fires).
+LAYER3_VALIDATION_AGENT_CONFIG_KEY: str = "layer3_validation_agent"
 
 # ── Layer-3 judge protocol ───────────────────────────────────────────
 
@@ -310,10 +316,42 @@ def extraction_agent_node(
     }
 
 
-def validation_agent_node(state: InvestigationState) -> dict[str, Any]:
-    """Validation sub-agent stub — task_05 ships the single-call LLM
-    judgment over IMA-amendment / variance-explanation sufficiency."""
-    return {}
+def validation_agent_node(
+    state: InvestigationState,
+    config: RunnableConfig,
+) -> dict[str, Any]:
+    """Run the Validation sub-agent if one is injected; otherwise no-op.
+
+    Reads a ``ValidationAgent`` instance from
+    ``config["configurable"][LAYER3_VALIDATION_AGENT_CONFIG_KEY]``.
+    When present, invokes it against the live state (which carries the
+    Extraction agent's findings the validation prompt is built from)
+    and writes ``validation_findings`` + a trace entry. When absent,
+    returns ``{}`` — same fail-closed posture as the extraction node:
+    the supervisor will loop until the iteration cap fires.
+
+    The validation invoke may short-circuit to the no-document fast
+    path (returning ``ValidationFindings(is_authorized=False,
+    confidence=0.9, reasoning="No supporting document found")``)
+    without an LLM call. Either path emits the same trace shape — the
+    fast vs LLM split is an internal detail of ``ValidationAgent``.
+    """
+    agent_obj = (config.get("configurable") or {}).get(LAYER3_VALIDATION_AGENT_CONFIG_KEY)
+    if agent_obj is None:
+        return {}
+    agent = cast(ValidationAgent, agent_obj)
+    findings = agent.invoke(state)
+    return {
+        "validation_findings": findings,
+        "investigation_log": [
+            InvestigationStep(
+                iteration=state.get("iterations_used", 0),
+                actor="validation_agent",
+                action="emitted_validation_findings",
+                timestamp=datetime.now(UTC),
+            )
+        ],
+    }
 
 
 def narrative_agent_node(state: InvestigationState) -> dict[str, Any]:
@@ -379,6 +417,7 @@ def run_investigation(
     agent_run_id: str,
     judge: Layer3JudgeFunc | None = None,
     extraction_agent: ExtractionAgent | None = None,
+    validation_agent: ValidationAgent | None = None,
 ) -> InvestigationState:
     """Run one Layer-3 investigation end-to-end.
 
@@ -415,6 +454,14 @@ def run_investigation(
         as a no-op — the supervisor keeps routing to extraction until
         the iteration cap fires. Production wires
         ``ExtractionAgent.from_env()``.
+    validation_agent
+        Optional Validation sub-agent. When present, the supervisor's
+        ``validation_agent_node`` invokes it once to populate
+        ``validation_findings`` (may short-circuit to the no-document
+        fast path without an LLM call). ``None`` (the default) leaves
+        the node as a no-op — the supervisor keeps routing to
+        validation until the iteration cap fires. Production wires
+        ``ValidationAgent.from_env()``.
 
     Raises
     ------
@@ -482,6 +529,8 @@ def run_investigation(
         configurable[LAYER3_JUDGE_CONFIG_KEY] = judge
     if extraction_agent is not None:
         configurable[LAYER3_EXTRACTION_AGENT_CONFIG_KEY] = extraction_agent
+    if validation_agent is not None:
+        configurable[LAYER3_VALIDATION_AGENT_CONFIG_KEY] = validation_agent
     config: dict[str, Any] = {
         "configurable": configurable,
         "recursion_limit": 10,
@@ -501,6 +550,7 @@ __all__ = [
     "CONFIDENCE_THRESHOLD",
     "LAYER3_EXTRACTION_AGENT_CONFIG_KEY",
     "LAYER3_JUDGE_CONFIG_KEY",
+    "LAYER3_VALIDATION_AGENT_CONFIG_KEY",
     "MAX_ITERATIONS",
     "Layer3JudgeFunc",
     "compiled_graph",
