@@ -75,6 +75,8 @@ from agentic_audit.layer3_agents.state import (
     InvestigationState,
     ValidationFindings,
 )
+from agentic_audit.models.telemetry import CallUsage, UsageRecorder
+from agentic_audit.observability import traced_function
 
 if TYPE_CHECKING:
     from openai import AzureOpenAI
@@ -310,6 +312,7 @@ class NarrativeAgent:
         prompt_version: str = "v1.1",
         client: AzureOpenAI | None = None,
         api_version: str = AZURE_OPENAI_API_VERSION,
+        usage_recorder: UsageRecorder | None = None,
     ) -> None:
         """Build a Narrative sub-agent.
 
@@ -320,6 +323,13 @@ class NarrativeAgent:
         by appending the type-specific suffix to the filename
         (``narrative_v1_1_exception_dc9d.txt``,
         ``narrative_v1_1_exception_dc2b.txt``).
+
+        ``usage_recorder`` is optional; when supplied, every billed
+        ``chat.completions.create`` call (1–4 per invocation depending
+        on word-limit + fact-check retries) records its token usage on
+        the recorder. Mirrors ``ValidationAgent`` + Layer-2 ``Judge``.
+        Fallback ESCALATE narratives that fire without an LLM call
+        leave the recorder untouched.
         """
         self._endpoint = endpoint
         self._deployment = deployment
@@ -330,6 +340,7 @@ class NarrativeAgent:
             if client is not None
             else _build_azure_openai_client(endpoint=endpoint, api_version=api_version)
         )
+        self._usage_recorder = usage_recorder
 
     @classmethod
     def from_env(
@@ -338,6 +349,7 @@ class NarrativeAgent:
         deployment: str = "gpt-4o",
         prompt_version: str = "v1.1",
         endpoint_env_var: str = "AZURE_OPENAI_ENDPOINT",
+        usage_recorder: UsageRecorder | None = None,
     ) -> NarrativeAgent:
         """Build from ``AZURE_OPENAI_ENDPOINT``. Same env contract as
         ``Judge.from_env`` and ``ExtractionAgent.from_env``."""
@@ -353,6 +365,7 @@ class NarrativeAgent:
             endpoint=endpoint,
             deployment=deployment,
             prompt_version=prompt_version,
+            usage_recorder=usage_recorder,
         )
 
     @property
@@ -369,6 +382,7 @@ class NarrativeAgent:
 
     # ── Production entry point ──────────────────────────────────────
 
+    @traced_function("layer3.narrative_agent.invoke")
     def invoke(self, state: InvestigationState) -> ExceptionNarrative:
         """Produce the final ``ExceptionNarrative`` for this
         investigation.
@@ -589,6 +603,7 @@ class NarrativeAgent:
                 max_tokens=_MAX_TOKENS,
                 response_format={"type": "json_object"},
             )
+            self._record_usage_if_present(response)
             content = response.choices[0].message.content
             if not content:
                 if attempt == 1:
@@ -616,6 +631,30 @@ class NarrativeAgent:
                     f"attempts: {exc.msg}; raw content[:500]={content[:500]!r}"
                 ) from exc
         raise RuntimeError("unreachable: _invoke_llm_json exhausted both attempts")
+
+    def _record_usage_if_present(self, response: Any) -> None:
+        """Record per-call token usage on the recorder if one is wired.
+
+        Mirrors ``ValidationAgent._record_usage_if_present`` and the
+        Layer-2 Judge — recording fires after every billed API call,
+        regardless of parse outcome (token usage is what the cloud
+        meters, and a malformed-JSON response was still a billed call).
+        """
+        if self._usage_recorder is None:
+            return
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        prompt_tokens = getattr(usage, "prompt_tokens", None)
+        completion_tokens = getattr(usage, "completion_tokens", None)
+        if prompt_tokens is None or completion_tokens is None:
+            return
+        self._usage_recorder.record(
+            CallUsage(
+                prompt_tokens=int(prompt_tokens),
+                completion_tokens=int(completion_tokens),
+            )
+        )
 
     # ── Fallback ────────────────────────────────────────────────────
 

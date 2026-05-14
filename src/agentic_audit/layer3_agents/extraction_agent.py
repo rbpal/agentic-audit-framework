@@ -49,6 +49,8 @@ from agentic_audit.layer3_agents.tools import (
     read_billing_rate,
     read_reviewer_comments,
 )
+from agentic_audit.models.telemetry import CallUsage, UsageRecorder
+from agentic_audit.observability import traced_function
 
 if TYPE_CHECKING:
     from langchain_openai import AzureChatOpenAI
@@ -121,6 +123,7 @@ class ExtractionAgent:
         prompt_version: str = "v1.0",
         client: AzureChatOpenAI | None = None,
         api_version: str = AZURE_OPENAI_API_VERSION,
+        usage_recorder: UsageRecorder | None = None,
     ) -> None:
         """Build an Extraction sub-agent.
 
@@ -130,6 +133,14 @@ class ExtractionAgent:
         is the suffix that resolves to the per-exception-type prompt
         files — ``"v1.0"`` reads ``extraction_v1_0_billing_rate_change.txt``
         and ``extraction_v1_0_variance_plausibility.txt``.
+
+        ``usage_recorder`` is optional; when supplied, every LLM call
+        the ReAct loop makes (typically 2–4 per invocation: tool-call
+        decisions + structured-response generation) records its token
+        usage on the recorder via a LangChain ``BaseCallbackHandler``.
+        Same recorder is shared with Validation + Narrative when wired
+        through ``run_investigation``, producing one aggregate cost-
+        telemetry row per investigation.
         """
         self._endpoint = endpoint
         self._deployment = deployment
@@ -139,6 +150,7 @@ class ExtractionAgent:
         # ReAct agent built from it. Both populate on first invoke.
         self._client = client
         self._compiled: Any = None
+        self._usage_recorder = usage_recorder
 
     @classmethod
     def from_env(
@@ -147,6 +159,7 @@ class ExtractionAgent:
         deployment: str = "gpt-4o",
         prompt_version: str = "v1.0",
         endpoint_env_var: str = "AZURE_OPENAI_ENDPOINT",
+        usage_recorder: UsageRecorder | None = None,
     ) -> ExtractionAgent:
         """Build from ``AZURE_OPENAI_ENDPOINT``. Same env contract as
         ``Judge.from_env`` and ``NarrativeGenerator.from_env``."""
@@ -162,6 +175,7 @@ class ExtractionAgent:
             endpoint=endpoint,
             deployment=deployment,
             prompt_version=prompt_version,
+            usage_recorder=usage_recorder,
         )
 
     @property
@@ -178,6 +192,7 @@ class ExtractionAgent:
 
     # ── Production entry point ──────────────────────────────────────
 
+    @traced_function("layer3.extraction_agent.invoke")
     def invoke(self, state: InvestigationState) -> ExtractionFindings:
         """Run one extraction pass against the live investigation state.
 
@@ -214,7 +229,14 @@ class ExtractionAgent:
         prompt = self._render_prompt(state, exception_type)
         agent = self._ensure_compiled()
 
-        result: dict[str, Any] = agent.invoke({"messages": [{"role": "user", "content": prompt}]})
+        invoke_config: dict[str, Any] = {}
+        if self._usage_recorder is not None:
+            invoke_config["callbacks"] = [_UsageRecordingCallbackHandler(self._usage_recorder)]
+
+        result: dict[str, Any] = agent.invoke(
+            {"messages": [{"role": "user", "content": prompt}]},
+            config=invoke_config or None,
+        )
         findings = self._parse_structured_response(result)
         messages: list[Any] = result.get("messages", [])
         return findings, messages
@@ -321,6 +343,67 @@ class ExtractionAgent:
         non-production status; the only caller is unit tests in
         ``tests/unit/layer3_agents/test_extraction_agent.py``."""
         return self._render_prompt(state, state["exception_type"])
+
+
+# LangChain callback that captures per-LLM-call token usage and
+# pushes it onto a UsageRecorder. Imports the LangChain base class
+# lazily inside the closure-class definition so the module remains
+# importable in test environments where langchain_core isn't fully
+# resolvable yet (the lazy-import pattern matches
+# ``_build_azure_chat_openai`` above).
+class _UsageRecordingCallbackHandler:
+    """LangChain callback that pushes per-LLM-call token usage onto a
+    ``UsageRecorder``.
+
+    LangChain's ``LLMResult.llm_output`` carries a ``"token_usage"``
+    dict (``prompt_tokens`` + ``completion_tokens``) for every Azure
+    OpenAI completion the ReAct loop makes. Subclassing
+    ``BaseCallbackHandler`` lazily (via ``__init_subclass__``-style
+    delayed binding through ``_get_base``) keeps the module importable
+    in tests that never instantiate the handler.
+
+    Same recorder shape as the raw-openai-client agents
+    (``ValidationAgent``, ``NarrativeAgent``, Layer-2 ``Judge``) — all
+    three sub-agents in one investigation share one recorder so the
+    cost-telemetry row aggregates the full ReAct + single-call
+    spend.
+    """
+
+    def __init__(self, recorder: UsageRecorder) -> None:
+        # Lazy import of the LangChain base — not at module import.
+        from langchain_core.callbacks import BaseCallbackHandler  # noqa: PLC0415
+
+        # Dynamically rebase to the LangChain class so callback
+        # dispatch picks up our overridden ``on_llm_end``. The hack:
+        # we can't subclass at class-definition time without forcing
+        # langchain_core import on every module load.
+        self.__class__ = type(
+            self.__class__.__name__,
+            (BaseCallbackHandler,),
+            dict(self.__class__.__dict__),
+        )
+        self._recorder = recorder
+
+    def on_llm_end(self, response: Any, **kwargs: Any) -> None:
+        """Pull token usage off the LLMResult and record it.
+
+        ``LLMResult.llm_output`` is dict-shaped per the LangChain
+        contract; ``token_usage`` is the standard key Azure OpenAI
+        populates. Defensive against missing keys — silently degrades
+        to "no record" rather than raising into the agent loop.
+        """
+        llm_output = getattr(response, "llm_output", None) or {}
+        usage = llm_output.get("token_usage") or {}
+        prompt_tokens = usage.get("prompt_tokens")
+        completion_tokens = usage.get("completion_tokens")
+        if prompt_tokens is None or completion_tokens is None:
+            return
+        self._recorder.record(
+            CallUsage(
+                prompt_tokens=int(prompt_tokens),
+                completion_tokens=int(completion_tokens),
+            )
+        )
 
 
 # Helper for the smoke logger — keeps log lines structured without

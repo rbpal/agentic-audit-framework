@@ -46,15 +46,17 @@ Checkpointer is ``InMemorySaver`` (1.x rename of ``MemorySaver``).
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from agentic_audit.layer3_agents.decisions_writer import Layer3DecisionsWriter
 from agentic_audit.layer3_agents.extraction_agent import ExtractionAgent
 from agentic_audit.layer3_agents.narrative_agent import NarrativeAgent
 from agentic_audit.layer3_agents.state import (
@@ -70,6 +72,20 @@ from agentic_audit.models.evidence import (
     ExtractedEvidence,
 )
 from agentic_audit.models.judge import JudgeResponse
+from agentic_audit.models.layer3_decision import (
+    FinalVerdict,
+    Layer3Decision,
+    PersistedStatus,
+)
+from agentic_audit.models.telemetry import (
+    CostTelemetry,
+    UsageRecorder,
+    estimate_cost_usd,
+)
+from agentic_audit.observability import traced_function
+
+if TYPE_CHECKING:
+    from agentic_audit.layer2_narrative.cost_writer import CostTelemetryWriter
 
 # ── Routing constants ────────────────────────────────────────────────
 
@@ -245,6 +261,7 @@ _TERMINAL_STATUS_BY_ROUTE: dict[str, str] = {
 }
 
 
+@traced_function("layer3.supervisor_node")
 def supervisor_node(
     state: InvestigationState,
     config: RunnableConfig,
@@ -379,6 +396,7 @@ def _agent_ran_updates(
     return updates
 
 
+@traced_function("layer3.extraction_agent_node")
 def extraction_agent_node(
     state: InvestigationState,
     config: RunnableConfig,
@@ -413,6 +431,7 @@ def extraction_agent_node(
     )
 
 
+@traced_function("layer3.validation_agent_node")
 def validation_agent_node(
     state: InvestigationState,
     config: RunnableConfig,
@@ -446,6 +465,7 @@ def validation_agent_node(
     )
 
 
+@traced_function("layer3.narrative_agent_node")
 def narrative_agent_node(
     state: InvestigationState,
     config: RunnableConfig,
@@ -540,6 +560,7 @@ def _new_investigation_run_id() -> str:
     return f"inv-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%f')}"
 
 
+@traced_function("layer3.run_investigation")
 def run_investigation(
     check: AttributeCheck,
     current: ExtractedEvidence,
@@ -550,6 +571,10 @@ def run_investigation(
     extraction_agent: ExtractionAgent | None = None,
     validation_agent: ValidationAgent | None = None,
     narrative_agent: NarrativeAgent | None = None,
+    usage_recorder: UsageRecorder | None = None,
+    cost_writer: CostTelemetryWriter | None = None,
+    decisions_writer: Layer3DecisionsWriter | None = None,
+    model_deployment: str = "gpt-4o",
 ) -> InvestigationState:
     """Run one Layer-3 investigation end-to-end.
 
@@ -605,6 +630,34 @@ def run_investigation(
         node as a no-op — the supervisor keeps routing to narrative
         until the iteration cap fires. Production wires
         ``NarrativeAgent.from_env()``.
+    usage_recorder
+        Optional ``UsageRecorder`` for token-spend accounting. When
+        ``None`` (the default), this function constructs a fresh
+        recorder per call AND injects it into ``extraction_agent``,
+        ``validation_agent``, ``narrative_agent`` (mutating their
+        ``_usage_recorder`` field) so all three sub-agents share one
+        accumulator. Caller-provided recorders are honoured verbatim —
+        sweep drivers can hand in one recorder per investigation OR
+        one recorder shared across an entire sweep, depending on the
+        cost-grain they want.
+    cost_writer
+        Optional ``CostTelemetryWriter``. When supplied, after the
+        graph runs to terminal a single ``CostTelemetry`` row is
+        built from the recorder's snapshot and merged into
+        ``audit_dev.gold.cost_telemetry`` keyed on ``agent_run_id``.
+        Skipped silently when ``None`` (e.g. unit-test paths).
+    decisions_writer
+        Optional ``Layer3DecisionsWriter``. When supplied, after the
+        graph runs to terminal a single ``Layer3Decision`` row is
+        built from the final state and inserted into
+        ``audit_dev.gold.layer3_decisions`` keyed on
+        ``investigation_run_id`` (append-only). Skipped silently
+        when ``None``.
+    model_deployment
+        Azure OpenAI deployment name pinned across the supervisor's
+        sub-agents (the privateDocs schema requires a single value
+        per investigation row). Defaults to ``"gpt-4o"`` to match the
+        agents' own defaults.
 
     Raises
     ------
@@ -645,6 +698,18 @@ def run_investigation(
 
     exception_type = _infer_exception_type(check)
     investigation_run_id = _new_investigation_run_id()
+    started_at = datetime.now(UTC)
+
+    # Construct or accept a usage recorder. Inject into each sub-agent
+    # that's actually wired so all three share one accumulator —
+    # produces one aggregate cost-telemetry row per investigation.
+    recorder = usage_recorder if usage_recorder is not None else UsageRecorder()
+    if extraction_agent is not None:
+        extraction_agent._usage_recorder = recorder
+    if validation_agent is not None:
+        validation_agent._usage_recorder = recorder
+    if narrative_agent is not None:
+        narrative_agent._usage_recorder = recorder
 
     initial_state: InvestigationState = {
         "investigation_run_id": investigation_run_id,
@@ -689,7 +754,190 @@ def run_investigation(
     # the other doesn't.
     result = compiled_graph.invoke(initial_state, config=config)  # type: ignore[call-overload,unused-ignore]
     final_state = cast(InvestigationState, result)
-    return _ensure_terminal_narrative(final_state)
+    final_state = _ensure_terminal_narrative(final_state)
+    completed_at = datetime.now(UTC)
+
+    # Persist the cost-telemetry + decision rows when writers are
+    # wired. Each is independently optional — the supervisor never
+    # blocks on warehouse availability for the in-memory verdict.
+    if cost_writer is not None:
+        telemetry = _build_cost_telemetry(
+            agent_run_id=agent_run_id,
+            recorder=recorder,
+            model_deployment=model_deployment,
+            started_at=started_at,
+            completed_at=completed_at,
+        )
+        cost_writer.write_cost_telemetry(telemetry)
+
+    if decisions_writer is not None:
+        prompt_version = _build_prompt_version_composite(
+            extraction_agent=extraction_agent,
+            validation_agent=validation_agent,
+            narrative_agent=narrative_agent,
+        )
+        decision = build_layer3_decision_row(
+            state=final_state,
+            prompt_version=prompt_version,
+            model_deployment=model_deployment,
+            decided_at=completed_at,
+        )
+        decisions_writer.write_decision(decision)
+
+    return final_state
+
+
+# ── Cost telemetry + decision row builders (Step 7 task_08) ─────────
+
+
+def _build_cost_telemetry(
+    *,
+    agent_run_id: str,
+    recorder: UsageRecorder,
+    model_deployment: str,
+    started_at: datetime,
+    completed_at: datetime,
+) -> CostTelemetry:
+    """Snapshot the recorder + walltime into a ``CostTelemetry`` row.
+
+    Cost is computed from ``MODEL_PRICING_USD_PER_1K`` via
+    ``estimate_cost_usd``; an unknown deployment surfaces as
+    ``cost_usd=None`` (token + latency data still persists).
+    Latency is the wall-clock window between
+    ``run_investigation`` entry and exit, NOT the sum of per-LLM-call
+    durations — captures the full supervisor + sub-agent + writer
+    end-to-end cost.
+    """
+    snapshot = recorder.snapshot()
+    cost_usd = estimate_cost_usd(
+        deployment=model_deployment,
+        input_tokens=snapshot.prompt_tokens,
+        output_tokens=snapshot.completion_tokens,
+    )
+    latency_ms = max(int((completed_at - started_at).total_seconds() * 1000), 0)
+    return CostTelemetry(
+        agent_run_id=agent_run_id,
+        input_tokens=snapshot.prompt_tokens,
+        output_tokens=snapshot.completion_tokens,
+        total_tokens=snapshot.total_tokens,
+        latency_ms=latency_ms,
+        cost_usd=cost_usd,
+        model_version=model_deployment,
+        started_at=started_at,
+        completed_at=completed_at,
+    )
+
+
+def _build_prompt_version_composite(
+    *,
+    extraction_agent: ExtractionAgent | None,
+    validation_agent: ValidationAgent | None,
+    narrative_agent: NarrativeAgent | None,
+) -> str:
+    """Build the pipe-delimited prompt-version composite for
+    ``gold.layer3_decisions.prompt_version``.
+
+    Format: ``"extraction_v1.0|validation_v1.0|narrative_v1.1"``.
+    Sub-agents that weren't wired (e.g. early-cap escalates with no
+    narrative agent) get a ``"<role>_none"`` placeholder so the
+    column is still searchable + the absence is auditable.
+    """
+    extraction_v = extraction_agent.prompt_version if extraction_agent is not None else "none"
+    validation_v = validation_agent.prompt_version if validation_agent is not None else "none"
+    narrative_v = narrative_agent.prompt_version if narrative_agent is not None else "none"
+    return f"extraction_{extraction_v}|validation_{validation_v}|narrative_{narrative_v}"
+
+
+# Map (status, recommendation) → final_verdict on the schema's enum.
+# The persisted enum is intentionally simpler than the in-process
+# state: 'pass' / 'fail' / 'uncertain'. The mapping captures the joint
+# signal — concluded + ACCEPT means the exception was authorised
+# (pass); concluded + ESCALATE means the automation answered "this
+# needs human action" (fail); escalated_to_human means the automation
+# couldn't reach an answer (uncertain).
+_VERDICT_BY_TERMINAL: dict[tuple[PersistedStatus, str], FinalVerdict] = {
+    ("concluded", "ACCEPT"): "pass",
+    ("concluded", "ESCALATE"): "fail",
+    ("escalated_to_human", "ACCEPT"): "uncertain",
+    ("escalated_to_human", "ESCALATE"): "uncertain",
+    ("failed", "ACCEPT"): "uncertain",
+    ("failed", "ESCALATE"): "uncertain",
+}
+
+
+def build_layer3_decision_row(
+    *,
+    state: InvestigationState,
+    prompt_version: str,
+    model_deployment: str,
+    decided_at: datetime,
+) -> Layer3Decision:
+    """Build a ``Layer3Decision`` row from the supervisor's terminal state.
+
+    Pre-condition: ``_ensure_terminal_narrative`` has already run, so
+    ``final_narrative`` is populated even on early-cap escalates.
+
+    Maps the in-process (status, recommendation) joint signal to the
+    schema's narrower ``final_verdict`` enum:
+
+      - concluded + ACCEPT  → ``"pass"``    (exception authorised)
+      - concluded + ESCALATE → ``"fail"``   (automation says human action)
+      - escalated_to_human  → ``"uncertain"`` (automation couldn't decide)
+      - failed              → ``"uncertain"`` (sub-agent exception)
+    """
+    final_narrative = state.get("final_narrative")
+    if final_narrative is None:
+        raise ValueError(
+            "build_layer3_decision_row: state has no final_narrative; "
+            "_ensure_terminal_narrative must run first to guarantee a "
+            "complete row."
+        )
+    raw_status = state.get("status")
+    if raw_status not in {"concluded", "escalated_to_human", "failed"}:
+        raise ValueError(
+            f"build_layer3_decision_row: status {raw_status!r} is not terminal; "
+            "the supervisor must reach a terminal state before persistence."
+        )
+    persisted_status = cast(PersistedStatus, raw_status)
+    recommendation = final_narrative.recommendation
+    final_verdict = _VERDICT_BY_TERMINAL[(persisted_status, recommendation)]
+
+    # tool_trace is the JSON-serialised investigation_log — the audit
+    # artefact a human reviewer reads to follow the supervisor's
+    # routing chain.
+    log_entries = [
+        {
+            "iteration": step.iteration,
+            "actor": step.actor,
+            "action": step.action,
+            "timestamp": step.timestamp.isoformat(),
+        }
+        for step in state.get("investigation_log", [])
+    ]
+    tool_trace = json.dumps(log_entries, default=str)
+
+    return Layer3Decision(
+        agent_run_id=state["agent_run_id"],
+        investigation_run_id=state["investigation_run_id"],
+        engagement_id=state["engagement_id"],
+        control_id=state["control_id"],
+        attribute_id=state["attribute_id"],
+        quarter=state["quarter"],
+        exception_type=state["exception_type"],
+        final_verdict=final_verdict,
+        final_confidence=state.get("confidence_score", 0.0),
+        iterations_used=state.get("iterations_used", 0),
+        status=persisted_status,
+        narrative_text=final_narrative.narrative_text,
+        citations=list(final_narrative.citations),
+        recommendation=recommendation,
+        tool_trace=tool_trace,
+        judge_verdict=state.get("judge_verdict"),
+        judge_confidence=state.get("judge_confidence"),
+        prompt_version=prompt_version,
+        model_deployment=model_deployment,
+        decided_at=decided_at,
+    )
 
 
 # ── Degraded escalation narrative (Step 7 task_07) ──────────────────
@@ -769,6 +1017,7 @@ __all__ = [
     "LAYER3_VALIDATION_AGENT_CONFIG_KEY",
     "MAX_ITERATIONS",
     "Layer3JudgeFunc",
+    "build_layer3_decision_row",
     "compiled_graph",
     "extraction_agent_node",
     "is_layer3_eligible",
