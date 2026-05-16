@@ -110,10 +110,23 @@ def _coerce_rate(value: Any) -> float | None:
     """Best-effort cast of ``AttributeCheck.extracted_value`` to a
     float. The field is typed ``Any | None`` upstream because Layer 1
     extraction stores raw cell values without per-attribute
-    normalisation; for DC-9.D specifically the value is the billing
-    rate as a number (basis points). Strings that parse as numerics
-    (``"30.0"``) are tolerated — Layer 1's extractor occasionally
-    serialises rates as strings depending on the source cell type.
+    normalisation; for DC-9.D specifically Layer 1 actually stores a
+    dict shape ``{"current_rate": X, "prior_rate": Y, "rate_change":
+    bool}`` (discovered by the Step 8 task_05 live verification run,
+    2026-05-16 — task_01 had assumed bare numeric per the placeholder
+    contract). This helper now handles four input shapes:
+
+    - ``None`` → None
+    - ``int`` / ``float`` → float (the assumed shape; still supported
+      so synthetic test fixtures don't need to wrap in a dict)
+    - ``str`` parseable as float → float (Layer 1 occasionally
+      serialises rates as strings depending on source cell type)
+    - ``dict`` with a ``"current_rate"`` key → recurse on that value
+      (the real Layer-1 shape; "current_rate" is the rate FOR THE
+      QUARTER OF THIS ROW, not vs another quarter — each Q's silver
+      row carries its own current_rate)
+
+    Anything else degrades to None rather than raising.
     """
     if value is None:
         return None
@@ -124,6 +137,8 @@ def _coerce_rate(value: Any) -> float | None:
             return float(value)
         except ValueError:
             return None
+    if isinstance(value, dict):
+        return _coerce_rate(value.get("current_rate"))
     return None
 
 

@@ -197,15 +197,30 @@ def test_find_attribute_check_returns_none_when_missing() -> None:
         ("not-a-number", None),
         ([1, 2], None),
         ({}, None),
+        # Real Layer-1 silver shape for DC-9.D — discovered by Step 8
+        # task_05 live verification. Layer 1 stores a dict, not a
+        # bare numeric; tool projects current_rate from the dict.
+        ({"current_rate": 0.005, "prior_rate": 0.005, "rate_change": False}, 0.005),
+        ({"current_rate": 30.0, "prior_rate": 28.5, "rate_change": True}, 30.0),
+        # Dict with current_rate as a string — same string-coercion
+        # behaviour applies after dict-unwrap.
+        ({"current_rate": "0.005"}, 0.005),
+        # Dict missing current_rate → None (degraded, not raised).
+        ({"prior_rate": 0.005, "rate_change": False}, None),
+        # Dict with current_rate=None → None.
+        ({"current_rate": None, "prior_rate": 0.005}, None),
     ],
 )
-def test_coerce_rate_handles_typed_and_stringified_numerics(
+def test_coerce_rate_handles_typed_stringified_and_dict_shapes(
     value: Any, expected: float | None
 ) -> None:
-    """Layer-1 occasionally stores rates as strings depending on the
-    source cell type; the tool tolerates both. Non-numeric or
-    non-string values degrade to None rather than raising — keeps
-    the ReAct loop progressing on dirty evidence."""
+    """Four input shapes from Layer-1 silver:
+    - bare numeric (synthetic tests / future Layer-1 shape)
+    - stringified numeric (cell-type-dependent serialisation)
+    - dict with current_rate key (real Layer-1 DC-9.D shape)
+    - None / unrecognised → None (never raise; ReAct loop continues
+      with rate=None signal)
+    """
     assert _coerce_rate(value) == expected
 
 

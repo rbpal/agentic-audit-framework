@@ -1,9 +1,12 @@
-"""Operator-only live verification of the Step 7 Layer-3 pipeline.
+"""Operator-only live verification of the Step 7 Layer-3 pipeline,
+now against real silver evidence (Step 8 task_05).
 
-Builds the 4 sub-agents + 2 gold-table writers against the dev
-Azure OpenAI deployment and Databricks SQL warehouse, runs one
-investigation against a synthetic DC-9.D Q3 scope, then SELECTs
-both gold rows to prove the writers landed.
+Builds the 3 sub-agents + 2 gold-table writers against the dev
+Azure OpenAI deployment and Databricks SQL warehouse, loads
+``ExtractedEvidence`` for the requested scope via
+``SilverEvidenceReader``, runs one investigation, then SELECTs both
+gold rows to prove the writers landed AND surface what the agent
+actually extracted.
 
 Env contract (same as scripts/run_layer2.py):
 
@@ -12,46 +15,69 @@ Env contract (same as scripts/run_layer2.py):
   DATABRICKS_SQL_WAREHOUSE_ID e.g. dac9d7873e752cf0
   DATABRICKS_TOKEN            dapi... (PAT)
 
-  poetry run python scripts/verify_layer3_live.py
+CLI:
 
-Cost: ~$0.05-0.10 (the supervisor's happy path runs ~10-15 LLM
-calls aggregated across extraction + validation + narrative + judge).
+  poetry run python scripts/verify_layer3_live.py
+  poetry run python scripts/verify_layer3_live.py \
+      --engagement-id alpha-pension-fund-2025 \
+      --control-id DC-9 --quarter Q3 --prior-quarter Q2
+
+Defaults match the Step 5 calibrated corpus
+(``alpha-pension-fund-2025``, DC-9 Q3 vs Q2).
+
+Cost: ~$0.05-0.10 (the supervisor's happy path runs 6-10 LLM calls
+across extraction + validation + narrative; real tool returns tend
+to extend the ReAct loop slightly vs the placeholder-empty case in
+PR #100).
 
 Idempotent for cost_telemetry (MERGE on agent_run_id when re-run
 with the same id; this driver mints a fresh id per run so each
 verification produces a new row pair).
+
+What changed vs PR #100
+-----------------------
+
+PR #100 used synthetic ``ExtractedEvidence`` because the tools
+returned empty payloads anyway — the narrative read "rate delta of
+'unknown -> unknown'". Step 8 tasks 01-03 swapped the tool bodies
+for real ones that read state via ``InjectedState``. Task_05 now
+flows real silver evidence into that state, so the agent's tool
+calls return real rates + (best-effort) amendment text, and the
+narrative cites them.
+
+**Diagnostic for "Step 8 closed"** (per ``privateDocs/step_08_agent_tools.md``):
+the narrative-text preview in ``gold.layer3_decisions`` must mention
+actual rate numbers (e.g., ``"28.5 → 30.0"``) instead of
+``"unknown -> unknown"``.
 """
 
 from __future__ import annotations
 
+import argparse
 import logging
 import os
 import secrets
 import sys
 from contextlib import contextmanager
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from agentic_audit.layer2_narrative.cost_writer import CostTelemetryWriter
+from agentic_audit.layer2_narrative.silver_reader import SilverEvidenceReader
 from agentic_audit.layer3_agents.decisions_writer import Layer3DecisionsWriter
 from agentic_audit.layer3_agents.extraction_agent import ExtractionAgent
 from agentic_audit.layer3_agents.narrative_agent import NarrativeAgent
 from agentic_audit.layer3_agents.supervisor import run_investigation
 from agentic_audit.layer3_agents.validation_agent import ValidationAgent
-from agentic_audit.models.evidence import (
-    ATTRIBUTES_PER_CONTROL,
-    AttributeCheck,
-    ExtractedEvidence,
-    SignOff,
-)
+from agentic_audit.models.engagement import ControlId, Quarter
+from agentic_audit.models.evidence import AttributeCheck, ExtractedEvidence
 
 if TYPE_CHECKING:
     from collections.abc import Generator
 
 logger = logging.getLogger(__name__)
 
-UTC_TS = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
-ENG_ID = "eng-live-verify"
+
+# ── Warehouse + silver wiring ─────────────────────────────────────────
 
 
 def _build_warehouse_conn_factory() -> Any:
@@ -87,30 +113,22 @@ def _build_warehouse_conn_factory() -> Any:
     return factory
 
 
-def _evidence(control_id: str, quarter: str) -> ExtractedEvidence:
-    """Synthetic DC-9 evidence — matches the live extraction test
-    pattern. Real silver evidence is not needed here; the placeholder
-    extraction tools return canned empty payloads regardless (Step 8
-    wires real bodies). Goal is verifying writer wiring, not tool
-    correctness."""
-    return ExtractedEvidence(
-        engagement_id=ENG_ID,
-        control_id=control_id,  # type: ignore[arg-type]
-        quarter=quarter,  # type: ignore[arg-type]
-        run_id=f"run-{quarter}",
-        extraction_timestamp=UTC_TS,
-        preparer=SignOff(initials="JD", role="preparer", date=UTC_TS),
-        reviewer=SignOff(initials="MR", role="reviewer", date=UTC_TS),
-        attributes=[
-            AttributeCheck(
-                control_id=control_id,  # type: ignore[arg-type]
-                attribute_id=a,  # type: ignore[arg-type]
-                status="pass",
-            )
-            for a in ATTRIBUTES_PER_CONTROL[control_id]
-        ],
-        source_bronze_file_hash="abc",
-    )
+def _load_silver_evidence(
+    reader: SilverEvidenceReader,
+    *,
+    engagement_id: str,
+    control_id: ControlId,
+    quarter: Quarter,
+) -> ExtractedEvidence:
+    """Load real ``ExtractedEvidence`` from silver. Raises
+    ``SilverReadError`` (from the reader) if the scope isn't
+    populated — surfaces loudly rather than silently substituting an
+    empty payload, because the verification's whole point is to
+    confirm real data flows through."""
+    return reader.read(engagement_id=engagement_id, control_id=control_id, quarter=quarter)
+
+
+# ── Output helpers ────────────────────────────────────────────────────
 
 
 def _new_agent_run_id() -> str:
@@ -124,7 +142,7 @@ SELECT
     attribute_id, quarter, exception_type, final_verdict,
     final_confidence, iterations_used, status, recommendation,
     judge_verdict, judge_confidence, prompt_version, model_deployment,
-    decided_at, LEFT(narrative_text, 240) AS narrative_preview
+    decided_at, LEFT(narrative_text, 400) AS narrative_preview
 FROM audit_dev.gold.layer3_decisions
 WHERE investigation_run_id = %(irid)s
 """
@@ -161,10 +179,53 @@ WHERE agent_run_id = %(arid)s
             print(f"  {c:>14}: {v}")
 
 
+# ── CLI + main ────────────────────────────────────────────────────────
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Layer-3 live verification driver — runs one investigation "
+            "against real silver evidence for the requested scope."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Defaults match the Step 5 calibrated corpus's main engagement "
+            "(alpha-pension-fund-2025, DC-9 Q3 vs Q2). Pass --scope flags "
+            "to verify against a different engagement / control / period."
+        ),
+    )
+    parser.add_argument(
+        "--engagement-id",
+        default="alpha-pension-fund-2025",
+        help="Engagement identifier loaded into silver (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--control-id",
+        default="DC-9",
+        choices=("DC-2", "DC-9"),
+        help="SOX control under investigation (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--quarter",
+        default="Q3",
+        choices=("Q1", "Q2", "Q3", "Q4"),
+        help="Period under investigation (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--prior-quarter",
+        default="Q2",
+        choices=("Q1", "Q2", "Q3", "Q4"),
+        help="Comparison period for cross-quarter reasoning (default: %(default)s).",
+    )
+    return parser.parse_args()
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
+    args = _parse_args()
 
     if not os.getenv("AZURE_OPENAI_ENDPOINT"):
         sys.stderr.write(
@@ -176,24 +237,70 @@ def main() -> int:
     factory = _build_warehouse_conn_factory()
     cost_writer = CostTelemetryWriter(factory)
     decisions_writer = Layer3DecisionsWriter(factory)
+    silver_reader = SilverEvidenceReader(factory)
 
     extraction = ExtractionAgent.from_env()
     validation = ValidationAgent.from_env()
     narrative = NarrativeAgent.from_env()
 
     agent_run_id = _new_agent_run_id()
-    check = AttributeCheck(control_id="DC-9", attribute_id="D", status="fail")
+    # The attribute the supervisor routes on is fixed per exception
+    # type (DC-9.D billing-rate-change uses attribute D; DC-2.B
+    # variance uses attribute B). Hardcoded here because the
+    # supervisor's Layer-1 trigger already makes the same mapping;
+    # a future per-control map lifts both.
+    attribute_id = "D" if args.control_id == "DC-9" else "B"
+    check = AttributeCheck(
+        control_id=cast(ControlId, args.control_id),
+        attribute_id=attribute_id,  # type: ignore[arg-type]
+        status="fail",
+    )
 
     print(f"\n=== Live verification — agent_run_id={agent_run_id} ===")
-    print(f"    endpoint={os.environ['AZURE_OPENAI_ENDPOINT']}")
-    print(f"    warehouse={os.environ['DATABRICKS_HOST']}")
-    print("    judge: None (fail-closed escalate; production judge wiring deferred)")
+    print(f"    endpoint   : {os.environ['AZURE_OPENAI_ENDPOINT']}")
+    print(f"    warehouse  : {os.environ['DATABRICKS_HOST']}")
+    print(
+        f"    scope      : engagement={args.engagement_id} "
+        f"control={args.control_id} quarter={args.quarter} "
+        f"prior={args.prior_quarter}"
+    )
+    print("    judge      : None (fail-closed escalate; production judge wiring deferred)")
     print()
+
+    print(f"Loading silver evidence for {args.engagement_id} / {args.control_id} ...")
+    current_evidence = _load_silver_evidence(
+        silver_reader,
+        engagement_id=args.engagement_id,
+        control_id=cast(ControlId, args.control_id),
+        quarter=cast(Quarter, args.quarter),
+    )
+    prior_evidence = _load_silver_evidence(
+        silver_reader,
+        engagement_id=args.engagement_id,
+        control_id=cast(ControlId, args.control_id),
+        quarter=cast(Quarter, args.prior_quarter),
+    )
+
+    # Surface the loaded evidence's target-attribute slice so the
+    # operator can see what the tool will project from. This is the
+    # ground truth the narrative is compared against.
+    print(f"\n=== Silver evidence: {args.control_id}.{attribute_id} current quarter ===")
+    target = next(
+        (a for a in current_evidence.attributes if a.attribute_id == attribute_id),
+        None,
+    )
+    if target is None:
+        print(f"  (attribute {attribute_id!r} not present in silver evidence)")
+    else:
+        print(f"  status              : {target.status}")
+        print(f"  extracted_value     : {target.extracted_value!r}")
+        print(f"  evidence_cell_refs  : {target.evidence_cell_refs}")
+        print(f"  notes               : {target.notes!r}")
 
     final_state = run_investigation(
         check,
-        _evidence("DC-9", "Q3"),
-        _evidence("DC-9", "Q2"),
+        current_evidence,
+        prior_evidence,
         agent_run_id=agent_run_id,
         extraction_agent=extraction,
         validation_agent=validation,
