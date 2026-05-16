@@ -8,6 +8,13 @@
 privateDocs/
 *.private.md
 
+# Scratch — local PoCs / spikes / one-off experiments. Per Step 8
+# task_00's plan: binding-mechanism PoC code lives here and must
+# NOT reach production / GitHub. Same defense-in-depth posture as
+# privateDocs above — if someone creates scratch/ inside the repo,
+# it's silently ignored.
+scratch/
+
 # Secrets — runtime env + infra credentials. The !.env.example
 # allow-list re-whitelists the committed template.
 .env

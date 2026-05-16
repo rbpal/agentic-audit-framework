@@ -126,20 +126,12 @@ def test_tools_are_langchain_tool_instances(tool_obj: BaseTool) -> None:
     assert tool_obj.description
 
 
-def test_read_billing_rate_returns_expected_shape() -> None:
-    result = read_billing_rate.invoke(
-        {"engagement_id": "eng-1", "control_id": "DC-9", "quarter": "Q3"}
-    )
-    assert set(result.keys()) >= {
-        "rate",
-        "rate_unit",
-        "source_cell_ref",
-        "recorded_at",
-        "notes",
-    }
-    # Placeholder returns rate=None — the contract Step 8 must preserve
-    # when swapping bodies.
-    assert result["rate"] is None
+# NOTE: read_billing_rate's shape + behaviour tests live in
+# tests/unit/layer3_agents/test_tools.py since Step 8 task_01 swapped
+# the placeholder body for a real one that requires InjectedState.
+# Direct .invoke({...}) without state no longer works for that tool.
+# `compare_billing_rates` and `read_reviewer_comments` are still
+# placeholders (task_02 + task_03 territory) — their tests stay here.
 
 
 def test_compare_billing_rates_returns_expected_shape() -> None:
