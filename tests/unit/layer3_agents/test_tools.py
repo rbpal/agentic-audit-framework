@@ -33,6 +33,7 @@ from agentic_audit.layer3_agents.tools import (
     _resolve_evidence_for_quarter,
     compare_billing_rates,
     read_billing_rate,
+    read_reviewer_comments,
 )
 from agentic_audit.models.evidence import (
     ATTRIBUTES_PER_CONTROL,
@@ -768,3 +769,303 @@ def test_compare_billing_rates_always_returns_seven_keys() -> None:
         unknown[k] is None for k in ("current_rate", "prior_rate", "delta", "percent_change")
     )
     assert unknown["ima_amendment_found"] is False
+
+
+# ── read_reviewer_comments (Step 8 task_03) ──────────────────────────
+
+
+def _dc2_evidence(
+    *,
+    quarter: str = "Q3",
+    dc2b_variance: Any = 0.42,
+    dc2b_notes: str | None = None,
+    dc2b_cell_refs: list[str] | None = None,
+) -> ExtractedEvidence:
+    """Build a synthetic DC-2 ExtractedEvidence with a configurable
+    DC-2.B attribute check (the variance-plausibility slot). Other
+    DC-2 attributes get default pass-status entries to satisfy the
+    per-attribute count validator."""
+    attrs: list[AttributeCheck] = []
+    for attr_id in ATTRIBUTES_PER_CONTROL["DC-2"]:
+        if attr_id == "B":
+            attrs.append(
+                AttributeCheck(
+                    control_id="DC-2",
+                    attribute_id="B",
+                    status="pass",
+                    evidence_cell_refs=dc2b_cell_refs or [],
+                    extracted_value=dc2b_variance,
+                    notes=dc2b_notes,
+                )
+            )
+        else:
+            attrs.append(
+                AttributeCheck(
+                    control_id="DC-2",
+                    attribute_id=attr_id,  # type: ignore[arg-type]
+                    status="pass",
+                )
+            )
+    return ExtractedEvidence(
+        engagement_id="eng-1",
+        control_id="DC-2",
+        quarter=quarter,  # type: ignore[arg-type]
+        run_id="run-1",
+        extraction_timestamp=UTC_TS,
+        preparer=SignOff(initials="JD", role="preparer", date=UTC_TS),
+        reviewer=SignOff(initials="MR", role="reviewer", date=UTC_TS),
+        attributes=attrs,
+        source_bronze_file_hash="abc",
+    )
+
+
+def test_read_reviewer_comments_happy_path_variance_explanation_present() -> None:
+    """Standard DC-2.B Q3 lookup: notes carry the variance
+    explanation, cell refs populated. All four return-shape fields
+    populated."""
+    current = _dc2_evidence(
+        quarter="Q3",
+        dc2b_variance=0.42,
+        dc2b_notes=(
+            "Q3 variance of 42% driven by mandate change adding "
+            "$120M emerging-markets sleeve; AUM up 38%."
+        ),
+        dc2b_cell_refs=["sheet2!B7", "ips_amendment.pdf!p4"],
+    )
+    prior = _dc2_evidence(quarter="Q2", dc2b_variance=0.05)
+    state = _state(current=current, prior=prior)
+
+    result = read_reviewer_comments.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-2",
+            "quarter": "Q3",
+            "attribute_id": "B",
+            "state": state,
+        }
+    )
+
+    assert result["variance_explanation_found"] is True
+    assert "mandate change" in result["variance_explanation_text"]
+    assert result["comments"] == [result["variance_explanation_text"]]
+    assert result["source_cell_refs"] == ["sheet2!B7", "ips_amendment.pdf!p4"]
+
+
+def test_read_reviewer_comments_notes_absent_degrades_to_empty() -> None:
+    """No notes attached → variance_explanation_found=False, empty
+    comments list, empty text. Cell refs may still be present
+    (reviewer attached a lineage anchor without prose)."""
+    current = _dc2_evidence(
+        quarter="Q3",
+        dc2b_variance=0.42,
+        dc2b_notes=None,
+        dc2b_cell_refs=["sheet2!B7"],
+    )
+    prior = _dc2_evidence(quarter="Q2")
+    state = _state(current=current, prior=prior)
+
+    result = read_reviewer_comments.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-2",
+            "quarter": "Q3",
+            "attribute_id": "B",
+            "state": state,
+        }
+    )
+
+    assert result["variance_explanation_found"] is False
+    assert result["comments"] == []
+    assert result["variance_explanation_text"] == ""
+    assert result["source_cell_refs"] == ["sheet2!B7"]
+
+
+def test_read_reviewer_comments_empty_notes_string_degrades_to_empty() -> None:
+    """Notes is an empty string (rather than None) — same shape
+    semantics. ``bool("")`` is False so the explanation is treated as
+    absent."""
+    current = _dc2_evidence(quarter="Q3", dc2b_notes="")
+    prior = _dc2_evidence(quarter="Q2")
+    state = _state(current=current, prior=prior)
+
+    result = read_reviewer_comments.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-2",
+            "quarter": "Q3",
+            "attribute_id": "B",
+            "state": state,
+        }
+    )
+
+    assert result["variance_explanation_found"] is False
+    assert result["comments"] == []
+
+
+def test_read_reviewer_comments_unknown_quarter_degrades_to_empty() -> None:
+    """LLM passed a quarter not loaded into state — returns the empty
+    shape rather than raising. Agent loop continues with 'no
+    explanation found' signal."""
+    current = _dc2_evidence(quarter="Q3", dc2b_notes="explanation text")
+    prior = _dc2_evidence(quarter="Q2")
+    state = _state(current=current, prior=prior)
+
+    result = read_reviewer_comments.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-2",
+            "quarter": "Q1",  # not in state
+            "attribute_id": "B",
+            "state": state,
+        }
+    )
+
+    assert result["variance_explanation_found"] is False
+    assert result["comments"] == []
+    assert result["variance_explanation_text"] == ""
+    assert result["source_cell_refs"] == []
+
+
+def test_read_reviewer_comments_unknown_attribute_degrades_to_empty() -> None:
+    """LLM passed an attribute_id that's not in the control's
+    attribute set (e.g., asked for DC-2.Z which doesn't exist) —
+    returns empty shape."""
+    current = _dc2_evidence(quarter="Q3", dc2b_notes="something")
+    prior = _dc2_evidence(quarter="Q2")
+    state = _state(current=current, prior=prior)
+
+    result = read_reviewer_comments.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-2",
+            "quarter": "Q3",
+            "attribute_id": "Z",  # not a real attribute
+            "state": state,
+        }
+    )
+
+    assert result["variance_explanation_found"] is False
+    assert result["comments"] == []
+
+
+def test_read_reviewer_comments_picks_correct_attribute() -> None:
+    """The tool projects per-attribute, NOT hardcoded to DC-2.B. A
+    DC-2.A query against state should pull DC-2.A's notes (which the
+    default fixture leaves None) rather than DC-2.B's. Verifies the
+    LLM-passed attribute_id is actually consulted."""
+    current = _dc2_evidence(
+        quarter="Q3",
+        dc2b_notes="DC-2.B variance explanation only",
+    )
+    prior = _dc2_evidence(quarter="Q2")
+    state = _state(current=current, prior=prior)
+
+    result = read_reviewer_comments.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-2",
+            "quarter": "Q3",
+            "attribute_id": "A",  # NOT B — should pull A's empty notes
+            "state": state,
+        }
+    )
+
+    # A's notes are None by default fixture; tool should NOT surface
+    # B's notes here.
+    assert result["variance_explanation_found"] is False
+    assert "DC-2.B variance" not in result["variance_explanation_text"]
+
+
+def test_read_reviewer_comments_prior_quarter_lookup() -> None:
+    """LLM can ask for prior quarter explicitly — should resolve
+    against prior_quarter_evidence, not current."""
+    current = _dc2_evidence(quarter="Q3", dc2b_notes="Q3 note")
+    prior = _dc2_evidence(quarter="Q2", dc2b_notes="Q2 note")
+    state = _state(current=current, prior=prior)
+
+    result = read_reviewer_comments.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-2",
+            "quarter": "Q2",
+            "attribute_id": "B",
+            "state": state,
+        }
+    )
+
+    assert result["variance_explanation_text"] == "Q2 note"
+
+
+def test_read_reviewer_comments_always_returns_four_keys() -> None:
+    """The 4-key return shape is part of the agent prompt's contract.
+    Happy + degraded paths must produce the same key set."""
+    current = _dc2_evidence(quarter="Q3", dc2b_notes="text")
+    prior = _dc2_evidence(quarter="Q2")
+    state = _state(current=current, prior=prior)
+
+    expected_keys = {
+        "comments",
+        "variance_explanation_found",
+        "variance_explanation_text",
+        "source_cell_refs",
+    }
+
+    happy = read_reviewer_comments.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-2",
+            "quarter": "Q3",
+            "attribute_id": "B",
+            "state": state,
+        }
+    )
+    assert set(happy.keys()) == expected_keys
+
+    unknown = read_reviewer_comments.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-2",
+            "quarter": "Q1",
+            "attribute_id": "B",
+            "state": state,
+        }
+    )
+    assert set(unknown.keys()) == expected_keys
+
+
+def test_read_reviewer_comments_source_cell_refs_is_a_copy_not_reference() -> None:
+    """Defensive: the tool returns ``list(check.evidence_cell_refs)``
+    rather than the underlying list directly, so a caller mutating
+    the returned list can't poison the AttributeCheck's lineage data.
+    Important since the agent's tool-call history serialises this and
+    a leaked mutation would corrupt the trace."""
+    current = _dc2_evidence(
+        quarter="Q3",
+        dc2b_notes="x",
+        dc2b_cell_refs=["sheet2!B7"],
+    )
+    prior = _dc2_evidence(quarter="Q2")
+    state = _state(current=current, prior=prior)
+
+    result = read_reviewer_comments.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-2",
+            "quarter": "Q3",
+            "attribute_id": "B",
+            "state": state,
+        }
+    )
+    result["source_cell_refs"].append("mutated-by-caller!")
+
+    # Pull again — the second call should NOT see the mutation
+    second = read_reviewer_comments.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-2",
+            "quarter": "Q3",
+            "attribute_id": "B",
+            "state": state,
+        }
+    )
+    assert second["source_cell_refs"] == ["sheet2!B7"]

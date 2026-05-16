@@ -389,6 +389,7 @@ def read_reviewer_comments(
     control_id: str,
     quarter: str,
     attribute_id: str,
+    state: Annotated[_ExtractionReActState, InjectedState],
 ) -> dict[str, Any]:
     """Pull the reviewer's free-text comments for a specific attribute.
 
@@ -398,9 +399,13 @@ def read_reviewer_comments(
     judge plausibility against the rationale.
 
     Args:
-        engagement_id: Engagement identifier.
-        control_id: SOX control (DC-2 in v1's variance path).
-        quarter: Audit period.
+        engagement_id: Engagement identifier (informational; the
+            supervisor only loads one engagement's evidence).
+        control_id: SOX control (``"DC-2"`` in v1's variance path,
+            but the tool projects per-attribute generically).
+        quarter: Audit period. Resolves against
+            ``state.current_quarter_evidence`` first, then
+            ``state.prior_quarter_evidence``.
         attribute_id: Single-letter attribute (``"B"`` for variance
             plausibility).
 
@@ -408,25 +413,60 @@ def read_reviewer_comments(
         Dict with keys:
             - ``comments`` (list[str]): Reviewer comments in
               chronological order. Empty list when none recorded.
-            - ``variance_explanation_found`` (bool): Did the reviewer
-              attach a variance explanation note?
+              At v1's silver shape there's at most one note per
+              attribute check; this list normalises future multi-
+              note shapes without breaking the prompt contract.
+            - ``variance_explanation_found`` (bool): True iff the
+              attribute check has any non-empty notes content.
+              Variance explanations are less narrowly defined than
+              IMA amendments (any reviewer note on DC-2.B IS the
+              explanation), so no substring-marker scan is needed.
             - ``variance_explanation_text`` (str): The explanation
-              body when found.
-            - ``source_cell_refs`` (list[str]): Lineage anchors per
-              comment.
+              body when found; empty string otherwise.
+            - ``source_cell_refs`` (list[str]): Lineage anchors —
+              the attribute check's ``evidence_cell_refs`` verbatim.
 
-    Placeholder: returns no comments + no explanation. Step 8 swaps
-    in the real reader.
+    Note: ``state`` is injected by LangGraph at call-time via
+    ``InjectedState``. The LLM does NOT see this parameter.
+
+    Data-source decision (Step 8 task_03): picks **Option (a)** —
+    pure-state read from ``AttributeCheck.notes`` (silver-side notes
+    the reviewer attached during Layer-1 extraction). Consistent with
+    task_02's Option (c) pure-state pattern (the spec's
+    "don't half-bronze the system" warning). Limit: notes may not
+    carry the full variance-explanation prose if the reviewer wrote
+    it elsewhere — tracked as Step 9 follow-up alongside the IMA-
+    amendment silver-schema extension.
     """
-    # FIXME(step_08): Replace with real reader over
-    # silver.evidence.AttributeCheck.notes + the bronze workpaper.
+    evidence = _resolve_evidence_for_quarter(state, quarter)
+    if evidence is None:
+        return {
+            "comments": [],
+            "variance_explanation_found": False,
+            "variance_explanation_text": "",
+            "source_cell_refs": [],
+        }
+
+    check = _find_attribute_check(evidence, attribute_id)
+    if check is None:
+        return {
+            "comments": [],
+            "variance_explanation_found": False,
+            "variance_explanation_text": "",
+            "source_cell_refs": [],
+        }
+
+    # Notes IS the variance explanation on the v1 silver shape. No
+    # marker-substring scan here (unlike task_02's amendment surface)
+    # because any non-empty note on DC-2.B is the explanation by
+    # construction — there's no other category of note for this
+    # attribute that we'd need to distinguish from.
+    notes_present = bool(check.notes)
     return {
-        "comments": [],
-        "variance_explanation_found": False,
-        "variance_explanation_text": "",
-        "source_cell_refs": [
-            f"<placeholder:{engagement_id}/{control_id}/{quarter}/{attribute_id}>"
-        ],
+        "comments": [check.notes] if notes_present else [],
+        "variance_explanation_found": notes_present,
+        "variance_explanation_text": check.notes or "",
+        "source_cell_refs": list(check.evidence_cell_refs),
     }
 
 
