@@ -28,8 +28,10 @@ import pytest
 
 from agentic_audit.layer3_agents.tools import (
     _coerce_rate,
+    _detect_amendment_in_notes,
     _find_attribute_check,
     _resolve_evidence_for_quarter,
+    compare_billing_rates,
     read_billing_rate,
 )
 from agentic_audit.models.evidence import (
@@ -412,3 +414,357 @@ def test_read_billing_rate_unit_is_always_basis_points() -> None:
             {"engagement_id": "eng-1", "control_id": "DC-9", "quarter": q, "state": state}
         )
         assert result["rate_unit"] == "basis_points"
+
+
+# ── _detect_amendment_in_notes (Step 8 task_02 helper) ───────────────
+
+
+@pytest.mark.parametrize(
+    "notes,expected_match",
+    [
+        ("Amendment dated 2026-06-15 authorises 30.0 bps.", True),
+        ("Per IMA amendment, rate increased.", True),
+        ("Side letter referencing fee schedule update.", True),
+        ("Addendum to the Investment Management Agreement.", True),
+        ("ima amendment lowercase variant", True),  # case-insensitive
+        ("AMENDMENT in shouty caps", True),
+        ("Reviewer concurs; standard fee schedule.", False),
+        ("No comment provided.", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_detect_amendment_in_notes_case_insensitive_substring_match(
+    notes: str | None, expected_match: bool
+) -> None:
+    """Helper accepts the four marker substrings case-insensitively
+    and returns the notes verbatim on hit. Empty/None/non-matching
+    notes degrade to None."""
+    result = _detect_amendment_in_notes(notes)
+    if expected_match:
+        assert result == notes
+    else:
+        assert result is None
+
+
+# ── compare_billing_rates — rate math ────────────────────────────────
+
+
+def test_compare_billing_rates_both_present_computes_delta_and_percent() -> None:
+    """Standard DC-9.D Q3 vs Q2 lookup: numeric rates on both
+    quarters, delta = current - prior, percent_change = delta /
+    prior. Five rate fields all populated."""
+    current = _evidence(quarter="Q3", dc9d_rate=30.0)
+    prior = _evidence(quarter="Q2", dc9d_rate=28.5)
+    state = _state(current=current, prior=prior)
+
+    result = compare_billing_rates.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-9",
+            "current_quarter": "Q3",
+            "prior_quarter": "Q2",
+            "state": state,
+        }
+    )
+
+    assert result["current_rate"] == 30.0
+    assert result["prior_rate"] == 28.5
+    assert result["delta"] == pytest.approx(1.5)
+    assert result["percent_change"] == pytest.approx(1.5 / 28.5)
+
+
+def test_compare_billing_rates_prior_missing_degrades_delta_to_null() -> None:
+    """Prior quarter not in state — delta + percent_change both None,
+    but current_rate still populated."""
+    current = _evidence(quarter="Q3", dc9d_rate=30.0)
+    prior = _evidence(quarter="Q2", dc9d_rate=28.5)
+    state = _state(current=current, prior=prior)
+
+    result = compare_billing_rates.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-9",
+            "current_quarter": "Q3",
+            "prior_quarter": "Q1",  # not in state
+            "state": state,
+        }
+    )
+
+    assert result["current_rate"] == 30.0
+    assert result["prior_rate"] is None
+    assert result["delta"] is None
+    assert result["percent_change"] is None
+
+
+def test_compare_billing_rates_current_missing_degrades_to_null() -> None:
+    current = _evidence(quarter="Q3", dc9d_rate=30.0)
+    prior = _evidence(quarter="Q2", dc9d_rate=28.5)
+    state = _state(current=current, prior=prior)
+
+    result = compare_billing_rates.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-9",
+            "current_quarter": "Q4",  # not in state
+            "prior_quarter": "Q2",
+            "state": state,
+        }
+    )
+
+    assert result["current_rate"] is None
+    assert result["prior_rate"] == 28.5
+    assert result["delta"] is None
+    assert result["percent_change"] is None
+
+
+def test_compare_billing_rates_zero_prior_yields_null_percent_change() -> None:
+    """Defensive: prior_rate=0 would divide-by-zero on percent_change.
+    delta still computable (current - 0 = current), but percent_change
+    is None to avoid math errors AND avoid surfacing infinity/NaN
+    into the agent's downstream reasoning."""
+    current = _evidence(quarter="Q3", dc9d_rate=30.0)
+    prior = _evidence(quarter="Q2", dc9d_rate=0.0)
+    state = _state(current=current, prior=prior)
+
+    result = compare_billing_rates.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-9",
+            "current_quarter": "Q3",
+            "prior_quarter": "Q2",
+            "state": state,
+        }
+    )
+
+    assert result["current_rate"] == 30.0
+    assert result["prior_rate"] == 0.0
+    assert result["delta"] == 30.0  # still computed
+    assert result["percent_change"] is None  # no division by zero
+
+
+def test_compare_billing_rates_negative_prior_yields_null_percent_change() -> None:
+    """Billing rates shouldn't be negative; if Layer-1 extracted one
+    by mistake, percent_change degrades to None rather than surfacing
+    a sign-confused ratio that would mislead the agent."""
+    current = _evidence(quarter="Q3", dc9d_rate=30.0)
+    prior = _evidence(quarter="Q2", dc9d_rate=-5.0)
+    state = _state(current=current, prior=prior)
+
+    result = compare_billing_rates.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-9",
+            "current_quarter": "Q3",
+            "prior_quarter": "Q2",
+            "state": state,
+        }
+    )
+
+    assert result["percent_change"] is None
+    assert result["delta"] == 35.0  # current - (-5) = 35
+
+
+def test_compare_billing_rates_non_numeric_extracted_value_degrades() -> None:
+    """Layer-1 stored non-numeric in current quarter's rate slot:
+    rate=None propagates through delta + percent_change."""
+    current = _evidence(quarter="Q3", dc9d_rate="see attached")
+    prior = _evidence(quarter="Q2", dc9d_rate=28.5)
+    state = _state(current=current, prior=prior)
+
+    result = compare_billing_rates.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-9",
+            "current_quarter": "Q3",
+            "prior_quarter": "Q2",
+            "state": state,
+        }
+    )
+
+    assert result["current_rate"] is None
+    assert result["prior_rate"] == 28.5
+    assert result["delta"] is None
+    assert result["percent_change"] is None
+
+
+# ── compare_billing_rates — amendment surface ────────────────────────
+
+
+def test_compare_billing_rates_amendment_present_in_current_notes_is_surfaced() -> None:
+    """Amendment marker in current quarter's DC-9.D notes -> full
+    ima_amendment_* triple populated with notes verbatim + first
+    cell ref as the lineage anchor."""
+    current = _evidence(
+        quarter="Q3",
+        dc9d_rate=30.0,
+        dc9d_notes="Amendment dated 2026-06-15 authorises 30.0 bps effective Q3.",
+        dc9d_cell_refs=["sheet1!A12", "amendment.pdf!p2"],
+    )
+    prior = _evidence(quarter="Q2", dc9d_rate=28.5)
+    state = _state(current=current, prior=prior)
+
+    result = compare_billing_rates.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-9",
+            "current_quarter": "Q3",
+            "prior_quarter": "Q2",
+            "state": state,
+        }
+    )
+
+    assert result["ima_amendment_found"] is True
+    assert "Amendment dated 2026-06-15" in result["ima_amendment_text"]
+    assert result["ima_amendment_cell_ref"] == "sheet1!A12"
+
+
+def test_compare_billing_rates_amendment_absent_when_notes_unstructured() -> None:
+    """Notes that don't carry an amendment marker -> ima_amendment_*
+    all empty/False. Common case when the reviewer just attached a
+    standard sign-off note."""
+    current = _evidence(
+        quarter="Q3",
+        dc9d_rate=30.0,
+        dc9d_notes="Reviewer concurs; standard fee schedule.",
+        dc9d_cell_refs=["sheet1!A12"],
+    )
+    prior = _evidence(quarter="Q2", dc9d_rate=28.5)
+    state = _state(current=current, prior=prior)
+
+    result = compare_billing_rates.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-9",
+            "current_quarter": "Q3",
+            "prior_quarter": "Q2",
+            "state": state,
+        }
+    )
+
+    assert result["ima_amendment_found"] is False
+    assert result["ima_amendment_text"] == ""
+    assert result["ima_amendment_cell_ref"] == ""
+
+
+def test_compare_billing_rates_amendment_absent_when_notes_none() -> None:
+    """No notes attached at all -> same empty amendment shape."""
+    current = _evidence(quarter="Q3", dc9d_rate=30.0, dc9d_notes=None)
+    prior = _evidence(quarter="Q2", dc9d_rate=28.5)
+    state = _state(current=current, prior=prior)
+
+    result = compare_billing_rates.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-9",
+            "current_quarter": "Q3",
+            "prior_quarter": "Q2",
+            "state": state,
+        }
+    )
+
+    assert result["ima_amendment_found"] is False
+    assert result["ima_amendment_text"] == ""
+    assert result["ima_amendment_cell_ref"] == ""
+
+
+def test_compare_billing_rates_amendment_uses_current_not_prior_notes() -> None:
+    """The amendment that justifies a Q3 rate change lives ON the Q3
+    evidence (the auditor attaches the reference to the period under
+    investigation), not the prior period. If the marker is only in
+    the prior period's notes, the tool should NOT surface it."""
+    current = _evidence(quarter="Q3", dc9d_rate=30.0, dc9d_notes="Standard quarter.")
+    prior = _evidence(
+        quarter="Q2",
+        dc9d_rate=28.5,
+        dc9d_notes="Amendment scheduled for Q3 implementation.",
+    )
+    state = _state(current=current, prior=prior)
+
+    result = compare_billing_rates.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-9",
+            "current_quarter": "Q3",
+            "prior_quarter": "Q2",
+            "state": state,
+        }
+    )
+
+    assert result["ima_amendment_found"] is False
+
+
+def test_compare_billing_rates_amendment_without_cell_refs_yields_empty_cell_ref() -> None:
+    """Amendment marker present but no cell refs on the check -> the
+    cell_ref string is empty even though found/text are populated."""
+    current = _evidence(
+        quarter="Q3",
+        dc9d_rate=30.0,
+        dc9d_notes="IMA amendment in place.",
+        dc9d_cell_refs=[],
+    )
+    prior = _evidence(quarter="Q2", dc9d_rate=28.5)
+    state = _state(current=current, prior=prior)
+
+    result = compare_billing_rates.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-9",
+            "current_quarter": "Q3",
+            "prior_quarter": "Q2",
+            "state": state,
+        }
+    )
+
+    assert result["ima_amendment_found"] is True
+    assert result["ima_amendment_text"] == "IMA amendment in place."
+    assert result["ima_amendment_cell_ref"] == ""
+
+
+# ── compare_billing_rates — shape invariants ─────────────────────────
+
+
+def test_compare_billing_rates_always_returns_seven_keys() -> None:
+    """The 7-key return shape is part of the agent prompt's contract.
+    All paths (happy + degraded) must produce the same key set."""
+    current = _evidence(quarter="Q3")
+    prior = _evidence(quarter="Q2")
+    state = _state(current=current, prior=prior)
+
+    expected_keys = {
+        "current_rate",
+        "prior_rate",
+        "delta",
+        "percent_change",
+        "ima_amendment_found",
+        "ima_amendment_text",
+        "ima_amendment_cell_ref",
+    }
+
+    # Happy path
+    happy = compare_billing_rates.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-9",
+            "current_quarter": "Q3",
+            "prior_quarter": "Q2",
+            "state": state,
+        }
+    )
+    assert set(happy.keys()) == expected_keys
+
+    # Unknown-quarters degraded path
+    unknown = compare_billing_rates.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-9",
+            "current_quarter": "Q1",
+            "prior_quarter": "Q0",
+            "state": state,
+        }
+    )
+    assert set(unknown.keys()) == expected_keys
+    assert all(
+        unknown[k] is None for k in ("current_rate", "prior_rate", "delta", "percent_change")
+    )
+    assert unknown["ima_amendment_found"] is False

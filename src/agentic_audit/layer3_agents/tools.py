@@ -224,12 +224,48 @@ def read_billing_rate(
 # ── compare_billing_rates ────────────────────────────────────────────
 
 
+# Substring markers we treat as "this AttributeCheck.notes references an
+# amendment." Case-insensitive match — Layer 1 doesn't normalise note
+# casing, so "IMA amendment" / "ima amendment" / "Amendment dated..."
+# all need to register. Keep the list short; broader heuristics risk
+# false positives that would surface non-amendment notes as amendment
+# text.
+_AMENDMENT_MARKERS = ("amendment", "ima ", "addendum", "side letter")
+
+
+def _detect_amendment_in_notes(notes: str | None) -> str | None:
+    """Return the notes verbatim if they look like an amendment marker,
+    else None.
+
+    The Layer-1 extractor doesn't have a dedicated IMA-amendment column
+    on silver yet (Step 8 doc § task_02 enumerates this as the open
+    data-availability question). Best-effort substring scan of the
+    DC-9.D ``AttributeCheck.notes`` field is the seam available without
+    a schema migration: when a reviewer attaches an amendment reference
+    to their note, surface it; otherwise degrade to "not found."
+
+    Real amendment-text extraction lives at the silver-schema layer
+    (extend silver with ``ima_amendment_text`` + ``ima_amendment_cell_ref``
+    columns AND extend Layer 1 to populate them from the bronze IA Note
+    sheet). Tracked as a Step 9 follow-up — Step 8 stays bounded to
+    "real bodies for the existing tool shape."
+    """
+    if not notes:
+        return None
+    lower = notes.lower()
+    for marker in _AMENDMENT_MARKERS:
+        if marker in lower:
+            return notes
+    return None
+
+
 @tool
 def compare_billing_rates(
     engagement_id: str,
     control_id: str,
     current_quarter: str,
     prior_quarter: str,
+    state: Annotated[_ExtractionReActState, InjectedState],
 ) -> dict[str, Any]:
     """Compute the rate delta between two quarters and surface any
     governing-document amendment that authorises a change.
@@ -240,37 +276,107 @@ def compare_billing_rates(
     amendment is sufficient (task_05).
 
     Args:
-        engagement_id: Engagement identifier.
-        control_id: SOX control (DC-9 in v1).
-        current_quarter: Quarter under investigation.
+        engagement_id: Engagement identifier (currently informational
+            — the supervisor only loads one engagement's evidence into
+            state).
+        control_id: SOX control identifier — ``"DC-9"`` for the
+            billing-rate path.
+        current_quarter: Quarter under investigation. Resolves against
+            ``state.current_quarter_evidence`` / prior, same pattern
+            as ``read_billing_rate``.
         prior_quarter: Comparison quarter (typically the immediately
             prior one in the engagement's calendar).
 
     Returns:
         Dict with keys:
-            - ``current_rate`` (float | None)
-            - ``prior_rate`` (float | None)
-            - ``delta`` (float | None): ``current - prior`` when both present.
-            - ``percent_change`` (float | None)
-            - ``ima_amendment_found`` (bool): Did an IMA amendment land
-              between prior and current?
-            - ``ima_amendment_text`` (str): Amendment body when found.
-            - ``ima_amendment_cell_ref`` (str): Lineage anchor.
+            - ``current_rate`` (float | None): None-safe; absent when
+              the current_quarter isn't in state or the DC-9.D check
+              is missing.
+            - ``prior_rate`` (float | None): same null shape.
+            - ``delta`` (float | None): ``current - prior`` when both
+              present; ``None`` otherwise.
+            - ``percent_change`` (float | None): ``(current - prior) /
+              prior`` when prior > 0; ``None`` when prior is missing,
+              zero, or negative.
+            - ``ima_amendment_found`` (bool): True iff the current
+              quarter's DC-9.D ``AttributeCheck.notes`` carries an
+              amendment-shaped marker.
+            - ``ima_amendment_text`` (str): The notes verbatim when
+              the marker hit; empty string otherwise.
+            - ``ima_amendment_cell_ref`` (str): First entry from the
+              current quarter's DC-9.D ``evidence_cell_refs`` (the
+              lineage anchor for the amendment evidence) when the
+              amendment hit; empty string otherwise.
 
-    Placeholder: returns an empty payload (no delta, no amendment).
-    Step 8 swaps in the joined silver-evidence + cross-file-validations
-    read.
+    Note: ``state`` is injected by LangGraph at call-time via
+    ``InjectedState``. The LLM does NOT see this parameter.
+
+    Amendment-surface design (Step 8 task_02):
+
+    Two enumerated options + the implemented third in the Step 8 doc:
+
+    - Option (a) — extend silver with dedicated amendment columns:
+      cleaner long-term but scope-creep risk for Step 8 (schema
+      migration + Layer-1 extractor update + re-baseline).
+    - Option (b) — wire a bronze IA-Note read inside this tool:
+      adds warehouse-round-trip latency + bronze-reader plumbing in
+      ``tools.py``.
+    - Option (c) — **implemented here:** best-effort substring scan
+      of the existing ``AttributeCheck.notes`` for amendment markers.
+      Pure-state read (no warehouse round-trip), no schema change,
+      consistent with ``read_billing_rate``'s pattern. Degrades to
+      "not found" when notes are unstructured or absent. Real amendment
+      extraction lives at silver-schema / Layer-1 extractor layer
+      and is tracked as a Step 9 follow-up.
     """
-    # FIXME(step_08): Replace with real cross-file join.
+    current_evidence = _resolve_evidence_for_quarter(state, current_quarter)
+    prior_evidence = _resolve_evidence_for_quarter(state, prior_quarter)
+
+    current_check = (
+        _find_attribute_check(current_evidence, _DC9D_ATTRIBUTE_ID)
+        if current_evidence is not None
+        else None
+    )
+    prior_check = (
+        _find_attribute_check(prior_evidence, _DC9D_ATTRIBUTE_ID)
+        if prior_evidence is not None
+        else None
+    )
+
+    current_rate = _coerce_rate(current_check.extracted_value) if current_check else None
+    prior_rate = _coerce_rate(prior_check.extracted_value) if prior_check else None
+
+    delta: float | None
+    percent_change: float | None
+    if current_rate is not None and prior_rate is not None:
+        delta = current_rate - prior_rate
+        # Guard against prior=0 (division by zero) AND prior<0 (negative
+        # rates aren't a thing for billing rates; the percent_change
+        # would be misleading sign-wise even if non-zero).
+        percent_change = (current_rate - prior_rate) / prior_rate if prior_rate > 0 else None
+    else:
+        delta = None
+        percent_change = None
+
+    # Amendment surface — best-effort scan of current quarter's notes.
+    # The amendment that justifies a Q3 rate change lives ON the Q3
+    # evidence (the auditor attaches the reference to the period under
+    # investigation), so prior's notes are not consulted.
+    amendment_text: str | None = None
+    amendment_cell_ref = ""
+    if current_check is not None:
+        amendment_text = _detect_amendment_in_notes(current_check.notes)
+        if amendment_text is not None and current_check.evidence_cell_refs:
+            amendment_cell_ref = current_check.evidence_cell_refs[0]
+
     return {
-        "current_rate": None,
-        "prior_rate": None,
-        "delta": None,
-        "percent_change": None,
-        "ima_amendment_found": False,
-        "ima_amendment_text": "",
-        "ima_amendment_cell_ref": f"<placeholder:{engagement_id}/{control_id}/"
-        f"{prior_quarter}->{current_quarter}>",
+        "current_rate": current_rate,
+        "prior_rate": prior_rate,
+        "delta": delta,
+        "percent_change": percent_change,
+        "ima_amendment_found": amendment_text is not None,
+        "ima_amendment_text": amendment_text or "",
+        "ima_amendment_cell_ref": amendment_cell_ref,
     }
 
 
