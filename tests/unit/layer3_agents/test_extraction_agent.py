@@ -53,6 +53,10 @@ from agentic_audit.layer3_agents.tools import (
     read_billing_rate,
     read_reviewer_comments,
 )
+
+# Imports kept even where the matching shape test moved to test_tools.py:
+# they're still referenced by test_tools_are_langchain_tool_instances
+# below (the @tool-decoration parametrize).
 from agentic_audit.models.evidence import (
     ATTRIBUTES_PER_CONTROL,
     AttributeCheck,
@@ -126,33 +130,12 @@ def test_tools_are_langchain_tool_instances(tool_obj: BaseTool) -> None:
     assert tool_obj.description
 
 
-# NOTE: read_billing_rate's shape + behaviour tests live in
-# tests/unit/layer3_agents/test_tools.py since Step 8 task_01 swapped
-# the placeholder body for a real one that requires InjectedState.
-# Direct .invoke({...}) without state no longer works for that tool.
-# `compare_billing_rates` and `read_reviewer_comments` are still
-# placeholders (task_02 + task_03 territory) — their tests stay here.
-
-
-def test_compare_billing_rates_returns_expected_shape() -> None:
-    result = compare_billing_rates.invoke(
-        {
-            "engagement_id": "eng-1",
-            "control_id": "DC-9",
-            "current_quarter": "Q3",
-            "prior_quarter": "Q2",
-        }
-    )
-    assert set(result.keys()) >= {
-        "current_rate",
-        "prior_rate",
-        "delta",
-        "percent_change",
-        "ima_amendment_found",
-        "ima_amendment_text",
-        "ima_amendment_cell_ref",
-    }
-    assert result["ima_amendment_found"] is False
+# NOTE: read_billing_rate (Step 8 task_01) + compare_billing_rates
+# (Step 8 task_02) shape + behaviour tests live in
+# tests/unit/layer3_agents/test_tools.py — both tools now require
+# InjectedState and direct .invoke({...}) without state no longer
+# works. Only `read_reviewer_comments` is still a placeholder
+# (task_03 territory) — its test stays here.
 
 
 def test_read_reviewer_comments_returns_expected_shape() -> None:
