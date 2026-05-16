@@ -130,30 +130,12 @@ def test_tools_are_langchain_tool_instances(tool_obj: BaseTool) -> None:
     assert tool_obj.description
 
 
-# NOTE: read_billing_rate (Step 8 task_01) + compare_billing_rates
-# (Step 8 task_02) shape + behaviour tests live in
-# tests/unit/layer3_agents/test_tools.py — both tools now require
-# InjectedState and direct .invoke({...}) without state no longer
-# works. Only `read_reviewer_comments` is still a placeholder
-# (task_03 territory) — its test stays here.
-
-
-def test_read_reviewer_comments_returns_expected_shape() -> None:
-    result = read_reviewer_comments.invoke(
-        {
-            "engagement_id": "eng-1",
-            "control_id": "DC-2",
-            "quarter": "Q3",
-            "attribute_id": "B",
-        }
-    )
-    assert set(result.keys()) >= {
-        "comments",
-        "variance_explanation_found",
-        "variance_explanation_text",
-        "source_cell_refs",
-    }
-    assert result["variance_explanation_found"] is False
+# NOTE: All three Layer-3 tool shape + behaviour tests live in
+# tests/unit/layer3_agents/test_tools.py as of Step 8 task_03.
+# All three tools require InjectedState now; direct .invoke({...})
+# without state no longer works. No tool-specific tests remain here —
+# only the @tool-decoration parametrize above (which checks the
+# BaseTool wrapping survives) is tool-specific.
 
 
 # ── Prompt templates ─────────────────────────────────────────────────
