@@ -35,9 +35,17 @@ from __future__ import annotations
 
 import operator
 from datetime import datetime
-from typing import Annotated, Literal, TypeAlias, TypedDict
+from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
+
+# typing_extensions.TypedDict (not stdlib typing.TypedDict): pydantic
+# on Python <3.12 rejects typing.TypedDict during JSON-schema
+# generation, which fires when LangChain @tool resolves a parameter
+# annotated as ``Annotated[InvestigationState, InjectedState]`` (Step
+# 8 InjectedState binding). typing_extensions is the supported
+# backport; on 3.12+ the two are equivalent.
+from typing_extensions import TypedDict
 
 from agentic_audit.models.engagement import ControlId, Quarter
 from agentic_audit.models.evidence import AttributeId, ExtractedEvidence

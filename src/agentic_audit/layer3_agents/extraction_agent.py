@@ -45,6 +45,7 @@ from agentic_audit.layer3_agents.state import (
     InvestigationState,
 )
 from agentic_audit.layer3_agents.tools import (
+    _ExtractionReActState,
     compare_billing_rates,
     read_billing_rate,
     read_reviewer_comments,
@@ -233,8 +234,20 @@ class ExtractionAgent:
         if self._usage_recorder is not None:
             invoke_config["callbacks"] = [_UsageRecordingCallbackHandler(self._usage_recorder)]
 
+        # Spread the full InvestigationState into the agent's input
+        # alongside the LLM's user message. The agent's state_schema
+        # (_ExtractionReActState) carries both halves; without the
+        # spread, InjectedState in tools resolves to None for every
+        # InvestigationState field. The PoC at
+        # scratch/step_08_task_00_binding_poc.py discovered this:
+        # state_schema alone isn't enough — the input must populate
+        # the schema's custom fields too.
+        agent_input: dict[str, Any] = {
+            **state,
+            "messages": [{"role": "user", "content": prompt}],
+        }
         result: dict[str, Any] = agent.invoke(
-            {"messages": [{"role": "user", "content": prompt}]},
+            agent_input,
             config=invoke_config or None,
         )
         findings = self._parse_structured_response(result)
@@ -291,10 +304,18 @@ class ExtractionAgent:
         # the import cost.
         from langgraph.prebuilt import create_react_agent  # noqa: PLC0415
 
+        # state_schema=_ExtractionReActState extends MessagesState with
+        # the supervisor's InvestigationState fields so InjectedState
+        # in tools (Step 8 task_00 binding decision) can find the
+        # live evidence at call-time. Without it, the agent would only
+        # carry MessagesState and InjectedState would silently return
+        # None for every InvestigationState field — first failure mode
+        # the task_00 PoC discovered.
         self._compiled = create_react_agent(
             model=self._client,
             tools=[read_billing_rate, compare_billing_rates, read_reviewer_comments],
             response_format=ExtractionFindings,
+            state_schema=_ExtractionReActState,
         )
         return self._compiled
 
