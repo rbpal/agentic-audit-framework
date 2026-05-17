@@ -24,7 +24,8 @@ dependencies = [
     "mlflow (>=3.11.1,<4.0.0)",
     "streamlit (>=1.56.0,<2.0.0)",
     "pyyaml (>=6.0.3,<7.0.0)",
-    "rapidfuzz (>=3.10,<4.0.0)"
+    "rapidfuzz (>=3.10,<4.0.0)",
+    "opentelemetry-exporter-otlp (>=1.41.0,<2.0.0)"
 ]
 
 
@@ -117,6 +118,10 @@ ignore_missing_imports = true
 minversion = "7.0"
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Repo root on sys.path so co-located packages outside `src/` (e.g. ai_ops_kit/)
+# are importable in tests. Without this, `from ai_ops_kit import ...` raises
+# ModuleNotFoundError because the kit isn't part of [tool.poetry] packages.
+pythonpath = ["."]
 addopts = [
     "--strict-markers",
     "--strict-config",
