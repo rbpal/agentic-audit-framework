@@ -95,3 +95,19 @@ jobs:
           name: coverage-report
           path: coverage.xml
           retention-days: 14
+
+  kit-reusable:
+    name: Kit reusable (fresh-venv install)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Verifies ai_ops_kit can be pip-installed and imported in a fresh venv
+    # outside this repo. Simulates how Projects 2 and 3 consume the kit
+    # (git submodule + isolated venv). Catches accidental imports from
+    # agentic_audit or other Project-1-specific code that would break a
+    # consumer's install. Script uses stdlib only — no Poetry needed.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: python scripts/verify_kit_reusable.py
