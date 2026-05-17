@@ -1,3 +1,29 @@
+# ============================================================================
+# Shared observability kit: ai_ops_kit (library, distributable separately)
+# ----------------------------------------------------------------------------
+# Standalone Python package declaring ONLY this kit's own dependencies
+# (OpenTelemetry stack + structlog) so it can install in any consumer venv
+# without dragging the main project's dependency closure along.
+#
+# Consumed by:
+#   - Project 1 (agentic-audit-framework, this repo): natively from
+#     `ai_ops_kit/` at repo root. The main pyproject's pytest config sets
+#     `pythonpath = ["."]` so tests can `from ai_ops_kit import ...`.
+#   - Projects 2 & 3: as a git submodule at `./ai_ops_kit/`, pinned to a
+#     specific commit SHA. Consumers update pins explicitly — no
+#     auto-upgrade across breaking changes.
+#
+# This is one of TWO pyproject.toml files in this repo — don't confuse them:
+#
+#   ../pyproject.toml  ← the main application (agentic-audit-framework)
+#   ./pyproject.toml   ← THIS FILE — the shared observability kit (library)
+#
+# See `ai_ops_kit/README.md` for the full consumption model, versioning
+# policy, and the self-containment guarantee (the kit must NEVER import
+# from project-specific code; the CI check enforcing this lands in
+# step_09_task_05).
+# ============================================================================
+
 [project]
 name = "ai_ops_kit"
 version = "0.1.0"

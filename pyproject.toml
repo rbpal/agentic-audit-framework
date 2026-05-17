@@ -1,3 +1,27 @@
+# ============================================================================
+# Main project: agentic-audit-framework (Project 1, the application)
+# ----------------------------------------------------------------------------
+# This pyproject declares the application's dependencies (LangGraph, Azure
+# OpenAI, Databricks, OpenTelemetry, MLflow, etc.) and owns the source code
+# at `src/agentic_audit/`. It's what `poetry install` resolves at the repo
+# root and what CI installs to run the test suite.
+#
+# This repo has TWO pyproject.toml files — don't confuse them:
+#
+#   ./pyproject.toml            ← THIS FILE — the main application
+#   ./ai_ops_kit/pyproject.toml ← the standalone shared observability kit
+#
+# Why two? `ai_ops_kit/` is a co-package at the repo root (see
+# `ai_ops_kit/README.md`) that lives here natively for Project 1 and is
+# consumed via git submodule by Projects 2 and 3. Its own pyproject lets
+# it install standalone in any consumer venv WITHOUT dragging this main
+# project's dependency closure (LangGraph, Databricks, MLflow, …) along.
+#
+# The two are independent units of distribution: this one is an application
+# you run; the kit is a library you import. They share a repo for
+# development convenience; they don't share a dependency graph.
+# ============================================================================
+
 [project]
 name = "agentic-audit-framework"
 version = "0.1.0"
@@ -25,7 +49,8 @@ dependencies = [
     "streamlit (>=1.56.0,<2.0.0)",
     "pyyaml (>=6.0.3,<7.0.0)",
     "rapidfuzz (>=3.10,<4.0.0)",
-    "opentelemetry-exporter-otlp (>=1.41.0,<2.0.0)"
+    "opentelemetry-exporter-otlp (>=1.41.0,<2.0.0)",
+    "structlog (>=24.1.0,<26.0.0)"
 ]
 
 
