@@ -50,7 +50,8 @@ dependencies = [
     "pyyaml (>=6.0.3,<7.0.0)",
     "rapidfuzz (>=3.10,<4.0.0)",
     "opentelemetry-exporter-otlp (>=1.41.0,<2.0.0)",
-    "structlog (>=24.1.0,<26.0.0)"
+    "structlog (>=24.1.0,<26.0.0)",
+    "azure-monitor-opentelemetry (>=1.6.0,<2.0.0)"
 ]
 
 
