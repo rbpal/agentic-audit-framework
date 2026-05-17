@@ -15,6 +15,12 @@ privateDocs/
 # it's silently ignored.
 scratch/
 
+# AI-assistant artifacts — never commit. Auto-generated files like
+# CLAUDE.md and the .claude/ settings directory belong outside the
+# repo (or in the user's home dir), never in shared history.
+CLAUDE.md
+.claude/
+
 # Secrets — runtime env + infra credentials. The !.env.example
 # allow-list re-whitelists the committed template.
 .env
