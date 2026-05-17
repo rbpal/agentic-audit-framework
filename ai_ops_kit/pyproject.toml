@@ -52,7 +52,20 @@ dev = [
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["ai_ops_kit*"]
-exclude = ["tests*"]
+# Explicit packages + package-dir mapping because this is a "flat" layout
+# where the project root IS the package (the kit's __init__.py sits next to
+# this pyproject.toml). setuptools' default `find` config would look for an
+# `ai_ops_kit/` subdirectory inside the project root — which doesn't exist —
+# and produce an empty install. The explicit mapping says "package `ai_ops_kit`
+# lives at `.`", so `pip install -e .` works inside the kit dir and the kit
+# is consumable as a pip package by Projects 2 and 3.
+[tool.setuptools]
+packages = ["ai_ops_kit"]
+package-dir = {"ai_ops_kit" = "."}
+
+# Pytest config so `pytest` from inside the kit dir discovers the standalone
+# tests at `./tests/`. (Project 1's main pytest finds the SAME tests too via
+# its own `pythonpath=["."]`, but the kit's standalone suite must work in
+# isolation when consumers run it via verify_kit_reusable.py or directly.)
+[tool.pytest.ini_options]
+testpaths = ["tests"]
