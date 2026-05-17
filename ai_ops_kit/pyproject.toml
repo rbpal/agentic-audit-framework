@@ -1,0 +1,32 @@
+[project]
+name = "ai_ops_kit"
+version = "0.1.0"
+description = "Shared OpenTelemetry tracer, structured JSON logging, and agent-call decorators for AI workloads"
+readme = "README.md"
+requires-python = ">=3.11,<4.0"
+license = "MIT"
+authors = [
+    { name = "Rajendra B Pal" }
+]
+dependencies = [
+    "opentelemetry-api (>=1.41.0,<2.0.0)",
+    "opentelemetry-sdk (>=1.41.0,<2.0.0)",
+    "opentelemetry-exporter-otlp (>=1.41.0,<2.0.0)",
+    "opentelemetry-instrumentation (>=0.62b0,<0.63)",
+    "structlog (>=24.1.0,<26.0.0)"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest (>=9.0.3,<10.0.0)",
+    "pytest-asyncio (>=1.3.0,<2.0.0)"
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ai_ops_kit*"]
+exclude = ["tests*"]
