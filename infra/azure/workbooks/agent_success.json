@@ -1,0 +1,90 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "## Agent Success — Layer-3 supervisor health\n\nFour panels showing whether agents are succeeding, what tools they're calling, how many iterations they need, and how often they escalate to human review. All queries scope to spans emitted by `ai_ops_kit` decorators — `@traced_agent` produces `agent.*` spans, `@traced_tool` produces `tool.*` spans. Time range is controlled by the workbook's top-right time picker."
+      },
+      "name": "title"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "### Success rate over time\n\nFraction of `agent.*` spans with `success == true`, bucketed in 5-minute windows. A flat 100% line is healthy. Dips below 100% mean agents are returning failure status (typically a sub-agent raised an unrecoverable error or the supervisor hit the iteration cap)."
+      },
+      "name": "header_success_rate"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "dependencies\n| where name startswith \"agent.\"\n| summarize success_rate = countif(success == true) * 1.0 / count() by bin(timestamp, 5m)\n| render timechart",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "timechart"
+      },
+      "name": "panel_success_rate"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "### Tool call distribution\n\nPie chart of `tool.*` span counts by tool name. Tells you which tools the agents lean on most heavily. A skewed distribution (one tool dominating) is normal for control-specific workloads; an unexpected long tail can indicate the supervisor is over-exploring."
+      },
+      "name": "header_tool_distribution"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "dependencies\n| where name startswith \"tool.\"\n| summarize count() by name\n| render piechart",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "piechart"
+      },
+      "name": "panel_tool_distribution"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "### P95 agent iteration count\n\n95th-percentile value of `agent.iterations` (set by the supervisor on the parent span), bucketed in 5-minute windows. The supervisor caps iterations per sub-agent; a P95 that hugs the cap means agents are routinely hitting the ceiling instead of converging naturally. Investigate by drilling into the slow `operation_Id`s."
+      },
+      "name": "header_p95_iterations"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "dependencies\n| where name startswith \"agent.\"\n| extend iterations = toint(customDimensions[\"agent.iterations\"])\n| summarize percentile(iterations, 95) by bin(timestamp, 5m)\n| render timechart",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "timechart"
+      },
+      "name": "panel_p95_iterations"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "### Escalation rate\n\nFraction of `agent.*` spans where `customDimensions[\"agent.status\"] == \"escalated_to_human\"`. Escalation is the supervisor's fail-closed verdict when confidence is too low to auto-decide. A spike means the corpus is drifting harder than the agent's current calibration handles — re-baseline (Step 6/8 style) or add a fixture for the new scenario class."
+      },
+      "name": "header_escalation_rate"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "dependencies\n| where name startswith \"agent.\"\n| summarize rate = countif(tostring(customDimensions[\"agent.status\"]) == \"escalated_to_human\") * 1.0 / count() by bin(timestamp, 5m)\n| render timechart",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "timechart"
+      },
+      "name": "panel_escalation_rate"
+    }
+  ],
+  "isLocked": false,
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}
