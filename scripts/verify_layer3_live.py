@@ -61,6 +61,8 @@ import sys
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, cast
 
+from ai_ops_kit import configure_azure_monitor, trace_context
+
 from agentic_audit.layer2_narrative.cost_writer import CostTelemetryWriter
 from agentic_audit.layer2_narrative.silver_reader import SilverEvidenceReader
 from agentic_audit.layer3_agents.decisions_writer import Layer3DecisionsWriter
@@ -75,6 +77,50 @@ if TYPE_CHECKING:
     from collections.abc import Generator
 
 logger = logging.getLogger(__name__)
+
+
+# ── Telemetry wiring ──────────────────────────────────────────────────
+
+_APPINSIGHTS_ENV_VAR = "APPLICATIONINSIGHTS_CONNECTION_STRING"
+_SERVICE_NAME = "agentic-audit-layer3"
+
+
+def _maybe_configure_azure_monitor() -> bool:
+    """Ship OTel spans/logs/metrics to App Insights iff the connection string env var is set.
+
+    Optional so operators without App Insights provisioned can still run the
+    driver. ``OTEL_SERVICE_NAME`` controls ``cloud_RoleName`` in App Insights
+    (Microsoft's distro picks it up automatically) — set here so all telemetry
+    is tagged consistently and workbooks can filter on a stable identifier.
+    """
+    if not os.getenv(_APPINSIGHTS_ENV_VAR):
+        logger.warning(
+            "%s not set — Layer-3 telemetry will NOT be shipped to App Insights. "
+            "Export it (see infra/terraform/modules/monitor/outputs.tf) to enable.",
+            _APPINSIGHTS_ENV_VAR,
+        )
+        return False
+    os.environ.setdefault("OTEL_SERVICE_NAME", _SERVICE_NAME)
+    configure_azure_monitor()
+    logger.info("App Insights telemetry enabled (service.name=%s)", _SERVICE_NAME)
+    return True
+
+
+def _flush_and_shutdown_tracer() -> None:
+    """Mandatory cleanup for CLI scripts using configure_azure_monitor.
+
+    Without explicit force_flush + shutdown, the BatchSpanProcessor daemon
+    thread is killed at process exit and in-flight batches are silently
+    dropped — verified on 2026-05-18 during the task_01 smoke test
+    (memory: feedback-otel-short-script-needs-flush).
+    """
+    from opentelemetry import trace
+
+    provider = trace.get_tracer_provider()
+    try:
+        provider.force_flush(timeout_millis=30000)
+    finally:
+        provider.shutdown()
 
 
 # ── Warehouse + silver wiring ─────────────────────────────────────────
@@ -227,104 +273,121 @@ def main() -> int:
     )
     args = _parse_args()
 
-    if not os.getenv("AZURE_OPENAI_ENDPOINT"):
-        sys.stderr.write(
-            "ERROR: AZURE_OPENAI_ENDPOINT not set. "
-            "Export e.g. https://aoai-aaf-rbpal-dev.openai.azure.com/ and re-run.\n"
+    telemetry_enabled = _maybe_configure_azure_monitor()
+
+    try:
+        if not os.getenv("AZURE_OPENAI_ENDPOINT"):
+            sys.stderr.write(
+                "ERROR: AZURE_OPENAI_ENDPOINT not set. "
+                "Export e.g. https://aoai-aaf-rbpal-dev.openai.azure.com/ and re-run.\n"
+            )
+            return 2
+
+        factory = _build_warehouse_conn_factory()
+        cost_writer = CostTelemetryWriter(factory)
+        decisions_writer = Layer3DecisionsWriter(factory)
+        silver_reader = SilverEvidenceReader(factory)
+
+        extraction = ExtractionAgent.from_env()
+        validation = ValidationAgent.from_env()
+        narrative = NarrativeAgent.from_env()
+
+        agent_run_id = _new_agent_run_id()
+        # The attribute the supervisor routes on is fixed per exception
+        # type (DC-9.D billing-rate-change uses attribute D; DC-2.B
+        # variance uses attribute B). Hardcoded here because the
+        # supervisor's Layer-1 trigger already makes the same mapping;
+        # a future per-control map lifts both.
+        attribute_id = "D" if args.control_id == "DC-9" else "B"
+        check = AttributeCheck(
+            control_id=cast(ControlId, args.control_id),
+            attribute_id=attribute_id,  # type: ignore[arg-type]
+            status="fail",
         )
-        return 2
 
-    factory = _build_warehouse_conn_factory()
-    cost_writer = CostTelemetryWriter(factory)
-    decisions_writer = Layer3DecisionsWriter(factory)
-    silver_reader = SilverEvidenceReader(factory)
+        print(f"\n=== Live verification — agent_run_id={agent_run_id} ===")
+        print(f"    endpoint   : {os.environ['AZURE_OPENAI_ENDPOINT']}")
+        print(f"    warehouse  : {os.environ['DATABRICKS_HOST']}")
+        print(
+            f"    scope      : engagement={args.engagement_id} "
+            f"control={args.control_id} quarter={args.quarter} "
+            f"prior={args.prior_quarter}"
+        )
+        print("    judge      : None (fail-closed escalate; production judge wiring deferred)")
+        print(
+            f"    telemetry  : {'App Insights (cloud_RoleName=' + _SERVICE_NAME + ')' if telemetry_enabled else 'disabled'}"
+        )
+        print()
 
-    extraction = ExtractionAgent.from_env()
-    validation = ValidationAgent.from_env()
-    narrative = NarrativeAgent.from_env()
+        print(f"Loading silver evidence for {args.engagement_id} / {args.control_id} ...")
+        current_evidence = _load_silver_evidence(
+            silver_reader,
+            engagement_id=args.engagement_id,
+            control_id=cast(ControlId, args.control_id),
+            quarter=cast(Quarter, args.quarter),
+        )
+        prior_evidence = _load_silver_evidence(
+            silver_reader,
+            engagement_id=args.engagement_id,
+            control_id=cast(ControlId, args.control_id),
+            quarter=cast(Quarter, args.prior_quarter),
+        )
 
-    agent_run_id = _new_agent_run_id()
-    # The attribute the supervisor routes on is fixed per exception
-    # type (DC-9.D billing-rate-change uses attribute D; DC-2.B
-    # variance uses attribute B). Hardcoded here because the
-    # supervisor's Layer-1 trigger already makes the same mapping;
-    # a future per-control map lifts both.
-    attribute_id = "D" if args.control_id == "DC-9" else "B"
-    check = AttributeCheck(
-        control_id=cast(ControlId, args.control_id),
-        attribute_id=attribute_id,  # type: ignore[arg-type]
-        status="fail",
-    )
+        # Surface the loaded evidence's target-attribute slice so the
+        # operator can see what the tool will project from. This is the
+        # ground truth the narrative is compared against.
+        print(f"\n=== Silver evidence: {args.control_id}.{attribute_id} current quarter ===")
+        target = next(
+            (a for a in current_evidence.attributes if a.attribute_id == attribute_id),
+            None,
+        )
+        if target is None:
+            print(f"  (attribute {attribute_id!r} not present in silver evidence)")
+        else:
+            print(f"  status              : {target.status}")
+            print(f"  extracted_value     : {target.extracted_value!r}")
+            print(f"  evidence_cell_refs  : {target.evidence_cell_refs}")
+            print(f"  notes               : {target.notes!r}")
 
-    print(f"\n=== Live verification — agent_run_id={agent_run_id} ===")
-    print(f"    endpoint   : {os.environ['AZURE_OPENAI_ENDPOINT']}")
-    print(f"    warehouse  : {os.environ['DATABRICKS_HOST']}")
-    print(
-        f"    scope      : engagement={args.engagement_id} "
-        f"control={args.control_id} quarter={args.quarter} "
-        f"prior={args.prior_quarter}"
-    )
-    print("    judge      : None (fail-closed escalate; production judge wiring deferred)")
-    print()
+        with trace_context(
+            "layer3_live_verification",
+            agent_run_id=agent_run_id,
+            engagement_id=args.engagement_id,
+            control_id=args.control_id,
+            quarter=args.quarter,
+            prior_quarter=args.prior_quarter,
+        ):
+            final_state = run_investigation(
+                check,
+                current_evidence,
+                prior_evidence,
+                agent_run_id=agent_run_id,
+                extraction_agent=extraction,
+                validation_agent=validation,
+                narrative_agent=narrative,
+                cost_writer=cost_writer,
+                decisions_writer=decisions_writer,
+            )
 
-    print(f"Loading silver evidence for {args.engagement_id} / {args.control_id} ...")
-    current_evidence = _load_silver_evidence(
-        silver_reader,
-        engagement_id=args.engagement_id,
-        control_id=cast(ControlId, args.control_id),
-        quarter=cast(Quarter, args.quarter),
-    )
-    prior_evidence = _load_silver_evidence(
-        silver_reader,
-        engagement_id=args.engagement_id,
-        control_id=cast(ControlId, args.control_id),
-        quarter=cast(Quarter, args.prior_quarter),
-    )
+        investigation_run_id = final_state["investigation_run_id"]
+        print("\n=== Investigation terminal state ===")
+        print(f"  investigation_run_id : {investigation_run_id}")
+        print(f"  status               : {final_state['status']}")
+        print(f"  iterations_used      : {final_state['iterations_used']}")
+        print(f"  confidence_score     : {final_state['confidence_score']:.3f}")
+        print(f"  judge_verdict        : {final_state.get('judge_verdict')!r}")
+        fn = final_state.get("final_narrative")
+        if fn is not None:
+            print(f"  recommendation       : {fn.recommendation}")
+            print(f"  word_count           : {fn.word_count}")
 
-    # Surface the loaded evidence's target-attribute slice so the
-    # operator can see what the tool will project from. This is the
-    # ground truth the narrative is compared against.
-    print(f"\n=== Silver evidence: {args.control_id}.{attribute_id} current quarter ===")
-    target = next(
-        (a for a in current_evidence.attributes if a.attribute_id == attribute_id),
-        None,
-    )
-    if target is None:
-        print(f"  (attribute {attribute_id!r} not present in silver evidence)")
-    else:
-        print(f"  status              : {target.status}")
-        print(f"  extracted_value     : {target.extracted_value!r}")
-        print(f"  evidence_cell_refs  : {target.evidence_cell_refs}")
-        print(f"  notes               : {target.notes!r}")
+        _print_decision_row(factory, investigation_run_id)
+        _print_cost_row(factory, agent_run_id)
 
-    final_state = run_investigation(
-        check,
-        current_evidence,
-        prior_evidence,
-        agent_run_id=agent_run_id,
-        extraction_agent=extraction,
-        validation_agent=validation,
-        narrative_agent=narrative,
-        cost_writer=cost_writer,
-        decisions_writer=decisions_writer,
-    )
-
-    investigation_run_id = final_state["investigation_run_id"]
-    print("\n=== Investigation terminal state ===")
-    print(f"  investigation_run_id : {investigation_run_id}")
-    print(f"  status               : {final_state['status']}")
-    print(f"  iterations_used      : {final_state['iterations_used']}")
-    print(f"  confidence_score     : {final_state['confidence_score']:.3f}")
-    print(f"  judge_verdict        : {final_state.get('judge_verdict')!r}")
-    fn = final_state.get("final_narrative")
-    if fn is not None:
-        print(f"  recommendation       : {fn.recommendation}")
-        print(f"  word_count           : {fn.word_count}")
-
-    _print_decision_row(factory, investigation_run_id)
-    _print_cost_row(factory, agent_run_id)
-
-    return 0
+        return 0
+    finally:
+        if telemetry_enabled:
+            _flush_and_shutdown_tracer()
 
 
 if __name__ == "__main__":
