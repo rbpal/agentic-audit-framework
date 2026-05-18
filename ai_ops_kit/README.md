@@ -56,7 +56,38 @@ ai_ops_kit/
 ├── tracing.py               # step_09_task_02 — OTel tracer + trace_context
 ├── logging_config.py        # step_09_task_03 — structlog + trace-id injection
 ├── decorators.py            # step_09_task_04 — @traced_tool, @traced_agent, @traced_llm_call
+├── azure.py                 # step_10_task_01 — configure_azure_monitor (App Insights wiring)
 └── tests/                   # step_09_task_05 — standalone test suite
 ```
 
-Modules beyond `__init__.py` land in subsequent tasks of Step 9.
+## Usage with Azure Application Insights
+
+`configure_azure_monitor()` installs Microsoft's Azure Monitor OTel distro, which ships spans, logs, and metrics to the App Insights resource identified by `APPLICATIONINSIGHTS_CONNECTION_STRING`. The `cloud_RoleName` (which app within the resource) is taken from the `OTEL_SERVICE_NAME` env var.
+
+```python
+import os
+from ai_ops_kit import configure_azure_monitor, traced_tool
+
+os.environ["OTEL_SERVICE_NAME"] = "agentic-audit-layer3"
+configure_azure_monitor()  # reads APPLICATIONINSIGHTS_CONNECTION_STRING from env
+
+@traced_tool(tool_name="read_billing_rate")
+def read_billing_rate(): ...
+```
+
+### Required cleanup for CLI / short-lived scripts
+
+Any script with a finite exit (CLI driver, batch job, one-shot verification) must explicitly flush and shut down the tracer provider before returning:
+
+```python
+from opentelemetry import trace
+
+try:
+    # ... business logic that emits spans ...
+finally:
+    provider = trace.get_tracer_provider()
+    provider.force_flush(timeout_millis=30000)
+    provider.shutdown()
+```
+
+**Why:** OTel's `BatchSpanProcessor` queues spans in memory and ships them on a background daemon thread. When the process exits, the daemon receives SIGTERM and any unfinished batch is silently dropped — no error, no warning, no exception. Long-running services (web servers, agent workers) drain naturally over time and don't need this. Verified 2026-05-18: a smoke test ending with `time.sleep(15)` shipped 1 of ~13 items; the same emit with explicit flush + shutdown shipped all 13.
