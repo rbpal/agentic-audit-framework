@@ -27,3 +27,19 @@ resource "azurerm_application_insights_workbook" "agent_success" {
 
   tags = var.tags
 }
+
+resource "azurerm_application_insights_workbook" "cost_tokens" {
+  name                = "a4f10003-0002-4002-a001-000000000002"
+  resource_group_name = var.resource_group_name
+  location            = var.location
+
+  display_name = "Cost & Tokens"
+  description  = "LLM spend health — cumulative cost, token throughput, cost per agent run, tokens by model."
+
+  source_id = lower(azurerm_application_insights.this.id)
+  category  = "workbook"
+
+  data_json = file("${path.module}/../../../azure/workbooks/cost_tokens.json")
+
+  tags = var.tags
+}
