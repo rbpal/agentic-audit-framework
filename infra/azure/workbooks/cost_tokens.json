@@ -1,0 +1,90 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "## Cost & Tokens — LLM spend health\n\nFour panels showing what the agents are spending on Azure OpenAI and where the tokens go. All queries scope to `llm.*` dependencies (spans emitted by the `ai_ops_kit` `@traced_llm_call` decorator). Time range is controlled by the workbook's top-right time picker. A flat or gently rising cost curve is healthy; sudden steps usually mean a prompt change shipped or a model deployment shifted."
+      },
+      "name": "title"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "### Cumulative LLM cost (USD)\n\nTotal USD spend per hour, summed from `customDimensions[\"llm.total_cost_usd\"]` on every `llm.*` span. A column chart so the per-bucket spend reads at a glance. Compare bucket heights to spot expensive hours; compare the trend to the same hour yesterday to spot regressions from a prompt change."
+      },
+      "name": "header_cost_per_hour"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "dependencies\n| where name startswith \"llm.\"\n| extend cost = todouble(customDimensions[\"llm.total_cost_usd\"])\n| summarize sum(cost) by bin(timestamp, 1h)\n| render columnchart",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "columnchart"
+      },
+      "name": "panel_cost_per_hour"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "### Token spend per minute\n\nSum of `customDimensions[\"llm.total_tokens\"]` per 1-minute bucket. Higher resolution than the cost panel so you can pinpoint exactly when a load spike began. Token spend tracks closely with cost but is independent of price-per-1k changes — useful when reasoning about throughput separately from billing."
+      },
+      "name": "header_tokens_per_minute"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "dependencies\n| where name startswith \"llm.\"\n| extend tokens = toint(customDimensions[\"llm.total_tokens\"])\n| summarize sum(tokens) by bin(timestamp, 1m)\n| render timechart",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "timechart"
+      },
+      "name": "panel_tokens_per_minute"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "### Average cost per agent run\n\nMean LLM cost per agent run, computed by joining `llm.*` spans to their parent `agent.*` span on `operation_Id` (the OTel trace id). Sub-agent costs roll up under the supervisor's trace because LangGraph propagates the trace context. A rising line means each agent run is getting more expensive — either iteration counts crept up or a model upgrade kicked in."
+      },
+      "name": "header_cost_per_run"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let llm_cost = dependencies\n  | where name startswith \"llm.\"\n  | extend cost = todouble(customDimensions[\"llm.total_cost_usd\"])\n  | summarize total_cost = sum(cost) by operation_Id;\nlet agent_runs = dependencies\n  | where name startswith \"agent.\"\n  | summarize started_at = min(timestamp) by operation_Id;\nllm_cost\n| join kind=inner agent_runs on operation_Id\n| summarize avg(total_cost) by bin(started_at, 5m)\n| render timechart",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "timechart"
+      },
+      "name": "panel_cost_per_run"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "### Tokens by model\n\nStacked bar chart of `llm.total_tokens` grouped by `customDimensions[\"llm.model_version\"]`. Surfaces shifts in model mix — e.g., if a deployment swapped some traffic from `gpt-4o` to `gpt-4o-mini`, the stack composition changes visibly. Also catches accidental regressions where a code path pinned to a wrong model."
+      },
+      "name": "header_tokens_by_model"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "dependencies\n| where name startswith \"llm.\"\n| extend tokens = toint(customDimensions[\"llm.total_tokens\"]),\n         model = tostring(customDimensions[\"llm.model_version\"])\n| summarize sum(tokens) by model, bin(timestamp, 5m)\n| render barchart kind=stacked",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "barchart"
+      },
+      "name": "panel_tokens_by_model"
+    }
+  ],
+  "isLocked": false,
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}
