@@ -128,19 +128,28 @@ disallow_untyped_defs = false
 [[tool.mypy.overrides]]
 module = [
     "azure.identity.*",
-    "azure.monitor.*",
     "langchain_core.*",
     "langchain_openai.*",
     "langgraph.*",
     "mlflow.*",
     "openai.*",
-    "opentelemetry.*",
     "openpyxl.*",
     "rapidfuzz.*",
     "streamlit.*",
-    "structlog.*",
     "tenacity.*",
 ]
+ignore_missing_imports = true
+
+# ai_ops_kit is a standalone co-package with its OWN mypy gate (the
+# "Kit reusable" CI job + ai_ops_kit/pyproject.toml). From src/'s
+# perspective it is an external dependency: trust its published API,
+# don't re-type-check its internals. Without follow_imports=skip, mypy
+# walks into the kit's modules and reports errors that belong to the
+# kit's gate, not this repo's — and the two configs resolve structlog /
+# opentelemetry differently, so they diverge.
+[[tool.mypy.overrides]]
+module = "ai_ops_kit.*"
+follow_imports = "skip"
 ignore_missing_imports = true
 
 # ----- Pytest: async auto, coverage floor ---------------------------------
