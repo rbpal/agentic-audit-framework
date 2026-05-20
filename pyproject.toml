@@ -128,14 +128,17 @@ disallow_untyped_defs = false
 [[tool.mypy.overrides]]
 module = [
     "azure.identity.*",
+    "azure.monitor.*",
     "langchain_core.*",
     "langchain_openai.*",
     "langgraph.*",
     "mlflow.*",
     "openai.*",
+    "opentelemetry.*",
     "openpyxl.*",
     "rapidfuzz.*",
     "streamlit.*",
+    "structlog.*",
     "tenacity.*",
 ]
 ignore_missing_imports = true

@@ -42,6 +42,7 @@ from pathlib import Path
 from string import Template
 from typing import TYPE_CHECKING, Any
 
+from ai_ops_kit import traced_llm_call
 from pydantic import ValidationError
 
 from agentic_audit.layer2_narrative.generator import (
@@ -54,7 +55,7 @@ from agentic_audit.layer3_agents.state import (
     InvestigationState,
     ValidationFindings,
 )
-from agentic_audit.models.telemetry import CallUsage, UsageRecorder
+from agentic_audit.models.telemetry import CallUsage, UsageRecorder, estimate_cost_usd
 from agentic_audit.observability import traced_function
 
 if TYPE_CHECKING:
@@ -316,14 +317,7 @@ class ValidationAgent:
         """
         for attempt in (1, 2):
             try:
-                response = self._client.chat.completions.create(
-                    model=self._deployment,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0,
-                    max_tokens=_MAX_TOKENS,
-                    response_format={"type": "json_object"},
-                )
-                self._record_usage_if_present(response)
+                response = self._traced_chat_completion(prompt)["response"]
             except Exception as exc:  # pragma: no cover — network/auth path
                 if attempt == 1:
                     logger.warning(
@@ -374,6 +368,46 @@ class ValidationAgent:
 
         # Unreachable — both attempts either return or fall through.
         raise RuntimeError("unreachable: _invoke_with_fallback exhausted both attempts")
+
+    @traced_llm_call(model="layer3_validation")
+    def _traced_chat_completion(self, prompt: str) -> dict[str, Any]:
+        """Single AOAI chat.completions.create call wrapped for OTel.
+
+        The ``@traced_llm_call`` decorator emits an ``llm.layer3_validation``
+        span and surfaces ``prompt_tokens / completion_tokens / total_tokens
+        / total_cost_usd / model_version`` from the return dict as
+        ``llm.*`` span attributes — what Workbook 2 (`Cost & Tokens`)
+        reads. The ``response`` key is opaque to the decorator and
+        passes through to the caller for content parsing.
+
+        Also invokes ``self._record_usage_if_present`` so the existing
+        ``UsageRecorder`` pipeline (``gold.cost_telemetry``) is
+        unaffected — the two telemetry pipes are independent.
+        """
+        response = self._client.chat.completions.create(
+            model=self._deployment,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=_MAX_TOKENS,
+            response_format={"type": "json_object"},
+        )
+        self._record_usage_if_present(response)
+        usage = getattr(response, "usage", None)
+        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0
+        cost = estimate_cost_usd(
+            deployment=self._deployment,
+            input_tokens=prompt_tokens,
+            output_tokens=completion_tokens,
+        )
+        return {
+            "response": response,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+            "total_cost_usd": cost if cost is not None else 0.0,
+            "model_version": self._deployment,
+        }
 
     def _record_usage_if_present(self, response: Any) -> None:
         """Record per-call token usage on the recorder if one is wired.
