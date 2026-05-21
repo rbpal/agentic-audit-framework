@@ -33,10 +33,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from string import Template
 from typing import TYPE_CHECKING, Any
 
+from ai_ops_kit import get_tracer
+from opentelemetry.trace import Status, StatusCode
 from pydantic import ValidationError
 
 from agentic_audit.layer3_agents.state import (
@@ -50,7 +53,7 @@ from agentic_audit.layer3_agents.tools import (
     read_billing_rate,
     read_reviewer_comments,
 )
-from agentic_audit.models.telemetry import CallUsage, UsageRecorder
+from agentic_audit.models.telemetry import CallUsage, UsageRecorder, estimate_cost_usd
 from agentic_audit.observability import traced_function
 
 if TYPE_CHECKING:
@@ -59,6 +62,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+# Per-call OTel span name for the ReAct loop's LLM calls. Mirrors the
+# kit ``@traced_llm_call`` naming on the single-shot agents
+# (``llm.layer3_narrative`` / ``llm.layer3_validation``) so Workbook 2
+# (`Cost & Tokens`) aggregates all three Layer-3 agents under the same
+# ``llm.*`` schema.
+_EXTRACTION_LLM_SPAN_NAME = "llm.layer3_extraction"
+
+# Module-level tracer, bound once at import (a ProxyTracer until
+# ``configure_azure_monitor`` sets the global provider, then delegates
+# to it — same lifecycle as the kit decorators' ``_TRACER``). Tests
+# monkeypatch this attribute to route spans to an InMemorySpanExporter.
+_TRACER = get_tracer(__name__)
 
 # Same scope the Layer-2 generator + judge use. Pinning explicitly
 # rather than importing from layer2_narrative avoids a top-level
@@ -230,9 +246,16 @@ class ExtractionAgent:
         prompt = self._render_prompt(state, exception_type)
         agent = self._ensure_compiled()
 
-        invoke_config: dict[str, Any] = {}
-        if self._usage_recorder is not None:
-            invoke_config["callbacks"] = [_UsageRecordingCallbackHandler(self._usage_recorder)]
+        # Always attach the telemetry callback so the per-call
+        # ``llm.layer3_extraction`` spans emit even when no
+        # UsageRecorder is wired — the App Insights pipe is independent
+        # of the Databricks cost pipe. The handler no-ops the recorder
+        # side when ``usage_recorder`` is None.
+        invoke_config: dict[str, Any] = {
+            "callbacks": [
+                _TelemetryCallbackHandler(self._usage_recorder, deployment=self._deployment)
+            ]
+        }
 
         # Spread the full InvestigationState into the agent's input
         # alongside the LLM's user message. The agent's state_schema
@@ -248,7 +271,7 @@ class ExtractionAgent:
         }
         result: dict[str, Any] = agent.invoke(
             agent_input,
-            config=invoke_config or None,
+            config=invoke_config,
         )
         findings = self._parse_structured_response(result)
         messages: list[Any] = result.get("messages", [])
@@ -366,37 +389,56 @@ class ExtractionAgent:
         return self._render_prompt(state, state["exception_type"])
 
 
-# LangChain callback that captures per-LLM-call token usage and
-# pushes it onto a UsageRecorder. Imports the LangChain base class
-# lazily inside the closure-class definition so the module remains
-# importable in test environments where langchain_core isn't fully
-# resolvable yet (the lazy-import pattern matches
-# ``_build_azure_chat_openai`` above).
-class _UsageRecordingCallbackHandler:
-    """LangChain callback that pushes per-LLM-call token usage onto a
-    ``UsageRecorder``.
+# LangChain callback that feeds BOTH telemetry pipes from one seam:
+# per-LLM-call token usage onto a UsageRecorder (Databricks
+# gold.cost_telemetry) AND a per-call ``llm.layer3_extraction`` OTel
+# span (App Insights, what Workbook 2 reads). Imports the LangChain
+# base class lazily inside ``__init__`` so the module remains importable
+# in test environments where langchain_core isn't fully resolvable yet
+# (the lazy-import pattern matches ``_build_azure_chat_openai`` above).
+class _TelemetryCallbackHandler:
+    """LangChain callback feeding both telemetry pipes for the ReAct loop.
 
-    LangChain's ``LLMResult.llm_output`` carries a ``"token_usage"``
-    dict (``prompt_tokens`` + ``completion_tokens``) for every Azure
-    OpenAI completion the ReAct loop makes. Subclassing
-    ``BaseCallbackHandler`` lazily (via ``__init_subclass__``-style
-    delayed binding through ``_get_base``) keeps the module importable
-    in tests that never instantiate the handler.
+    The Extraction agent's LLM calls happen inside LangGraph's
+    ``create_react_agent`` loop (2-4 calls per invocation), which we do
+    not own — the LangChain callback is the only per-call seam. This
+    handler uses it twice:
 
-    Same recorder shape as the raw-openai-client agents
-    (``ValidationAgent``, ``NarrativeAgent``, Layer-2 ``Judge``) — all
-    three sub-agents in one investigation share one recorder so the
-    cost-telemetry row aggregates the full ReAct + single-call
-    spend.
+    1. **Databricks pipe** — pushes ``prompt_tokens + completion_tokens``
+       onto the shared ``UsageRecorder`` (``gold.cost_telemetry``), same
+       recorder shape as the raw-openai-client agents
+       (``ValidationAgent``, ``NarrativeAgent``, Layer-2 ``Judge``). All
+       three sub-agents in one investigation share one recorder so the
+       cost row aggregates the full ReAct + single-call spend.
+    2. **App Insights pipe** — emits one ``llm.layer3_extraction`` OTel
+       span per call carrying the same ``llm.*`` attribute schema the
+       kit's ``@traced_llm_call`` produces for narrative + validation
+       (``prompt_tokens / completion_tokens / total_tokens /
+       total_cost_usd / model_version / duration_ms / success``). This
+       is what Workbook 2 (`Cost & Tokens`) reads.
+
+    The span opens in ``on_chat_model_start`` (``AzureChatOpenAI`` is a
+    chat model, so LangChain dispatches that hook — NOT
+    ``on_llm_start``) and closes in ``on_llm_end`` / ``on_llm_error``,
+    keyed by LangChain's per-call ``run_id`` so concurrent calls don't
+    cross wires and ``duration_ms`` reflects model latency rather than
+    the tool-execution time between calls.
+
+    ``recorder`` is optional: when ``None`` the Databricks side no-ops
+    but the span still emits — the two pipes are independent.
+
+    Subclassing ``BaseCallbackHandler`` lazily (rebasing ``__class__``
+    in ``__init__``) keeps the module importable in tests that never
+    instantiate the handler.
     """
 
-    def __init__(self, recorder: UsageRecorder) -> None:
+    def __init__(self, recorder: UsageRecorder | None, *, deployment: str = "gpt-4o") -> None:
         # Lazy import of the LangChain base — not at module import.
         from langchain_core.callbacks import BaseCallbackHandler  # noqa: PLC0415
 
         # Dynamically rebase to the LangChain class so callback
-        # dispatch picks up our overridden ``on_llm_end``. The hack:
-        # we can't subclass at class-definition time without forcing
+        # dispatch picks up our overridden hooks. The hack: we can't
+        # subclass at class-definition time without forcing
         # langchain_core import on every module load.
         self.__class__ = type(
             self.__class__.__name__,
@@ -404,27 +446,117 @@ class _UsageRecordingCallbackHandler:
             dict(self.__class__.__dict__),
         )
         self._recorder = recorder
+        self._deployment = deployment
+        # run_id -> (span, perf_counter start). Populated on
+        # chat-model-start, drained on llm-end / llm-error.
+        self._spans: dict[Any, tuple[Any, float]] = {}
+
+    # ── span lifecycle ──────────────────────────────────────────────
+
+    def on_chat_model_start(self, serialized: Any, messages: Any, **kwargs: Any) -> None:
+        """Open a span at the start of each chat-model call.
+
+        ``AzureChatOpenAI`` is a chat model, so LangChain dispatches
+        ``on_chat_model_start`` (not ``on_llm_start``) for every
+        ReAct-loop call. Opening the span here makes its duration
+        capture model latency only — not the tool I/O between calls."""
+        self._start_span(kwargs.get("run_id"))
+
+    def on_llm_start(self, serialized: Any, prompts: Any, **kwargs: Any) -> None:
+        """Completion-model fallback start hook.
+
+        Not exercised by ``AzureChatOpenAI`` (a chat model), but kept
+        symmetric so a future completion-style model still gets a
+        span."""
+        self._start_span(kwargs.get("run_id"))
 
     def on_llm_end(self, response: Any, **kwargs: Any) -> None:
-        """Pull token usage off the LLMResult and record it.
+        """Record usage on both pipes and close the span.
 
         ``LLMResult.llm_output`` is dict-shaped per the LangChain
         contract; ``token_usage`` is the standard key Azure OpenAI
-        populates. Defensive against missing keys — silently degrades
-        to "no record" rather than raising into the agent loop.
+        populates. Defensive against missing keys — degrades to a span
+        with no token attrs (and no recorder write) rather than raising
+        into the agent loop.
         """
+        prompt_tokens, completion_tokens = self._extract_usage(response)
+        # Databricks pipe — record only when both counts are present and
+        # a recorder is wired (unchanged behaviour).
+        if (
+            self._recorder is not None
+            and prompt_tokens is not None
+            and completion_tokens is not None
+        ):
+            self._recorder.record(
+                CallUsage(
+                    prompt_tokens=int(prompt_tokens),
+                    completion_tokens=int(completion_tokens),
+                )
+            )
+        # App Insights pipe.
+        self._finalize_span(kwargs.get("run_id"), prompt_tokens, completion_tokens, success=True)
+
+    def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
+        """Close the span on a failed call so it never leaks.
+
+        Marks ``llm.success=False`` + ERROR status and records the
+        exception, mirroring the kit decorator's error path."""
+        self._finalize_span(kwargs.get("run_id"), None, None, success=False, error=error)
+
+    # ── helpers ─────────────────────────────────────────────────────
+
+    def _start_span(self, run_id: Any) -> None:
+        span = _TRACER.start_span(_EXTRACTION_LLM_SPAN_NAME)
+        self._spans[run_id] = (span, time.perf_counter())
+
+    @staticmethod
+    def _extract_usage(response: Any) -> tuple[int | None, int | None]:
+        """Pull ``(prompt_tokens, completion_tokens)`` off an LLMResult.
+
+        Returns ``(None, None)`` when the shape carries no usage (e.g.
+        streaming partials) so callers degrade gracefully."""
         llm_output = getattr(response, "llm_output", None) or {}
         usage = llm_output.get("token_usage") or {}
-        prompt_tokens = usage.get("prompt_tokens")
-        completion_tokens = usage.get("completion_tokens")
-        if prompt_tokens is None or completion_tokens is None:
+        return usage.get("prompt_tokens"), usage.get("completion_tokens")
+
+    def _finalize_span(
+        self,
+        run_id: Any,
+        prompt_tokens: int | None,
+        completion_tokens: int | None,
+        *,
+        success: bool,
+        error: BaseException | None = None,
+    ) -> None:
+        """Close the span for ``run_id``, setting the ``llm.*`` attrs.
+
+        No-ops when no span was opened for ``run_id`` (e.g. unit tests
+        that drive ``on_llm_end`` directly without a start hook). The
+        ``span.end()`` runs in a ``finally`` so an attribute-set failure
+        can't leak the span."""
+        entry = self._spans.pop(run_id, None)
+        if entry is None:
             return
-        self._recorder.record(
-            CallUsage(
-                prompt_tokens=int(prompt_tokens),
-                completion_tokens=int(completion_tokens),
-            )
-        )
+        span, start = entry
+        try:
+            span.set_attribute("llm.duration_ms", (time.perf_counter() - start) * 1000.0)
+            span.set_attribute("llm.success", success)
+            span.set_attribute("llm.model_version", self._deployment)
+            if prompt_tokens is not None and completion_tokens is not None:
+                pt, ct = int(prompt_tokens), int(completion_tokens)
+                cost = estimate_cost_usd(
+                    deployment=self._deployment, input_tokens=pt, output_tokens=ct
+                )
+                span.set_attribute("llm.prompt_tokens", pt)
+                span.set_attribute("llm.completion_tokens", ct)
+                span.set_attribute("llm.total_tokens", pt + ct)
+                span.set_attribute("llm.total_cost_usd", float(cost) if cost is not None else 0.0)
+            if not success:
+                span.set_status(Status(StatusCode.ERROR))
+                if error is not None:
+                    span.record_exception(error)
+        finally:
+            span.end()
 
 
 # Helper for the smoke logger — keeps log lines structured without
