@@ -134,6 +134,7 @@ module = [
     "mlflow.*",
     "openai.*",
     "openpyxl.*",
+    "opentelemetry.*",
     "rapidfuzz.*",
     "streamlit.*",
     "tenacity.*",

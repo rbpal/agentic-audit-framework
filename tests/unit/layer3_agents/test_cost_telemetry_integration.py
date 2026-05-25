@@ -588,25 +588,49 @@ def test_narrative_agent_records_usage_when_recorder_wired() -> None:
 # ── ExtractionAgent callback handler ─────────────────────────────────
 
 
+def _inmemory_tracer() -> tuple[Any, Any]:
+    """Build an OTel tracer routed to an in-memory exporter for span
+    assertions. Returns ``(tracer, exporter)``. SimpleSpanProcessor
+    exports on ``span.end()`` so finished spans are visible
+    synchronously."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return provider.get_tracer("test"), exporter
+
+
+def _llm_result(prompt_tokens: int, completion_tokens: int) -> Any:
+    """Minimal LangChain ``LLMResult``-shaped object carrying usage."""
+    result = MagicMock()
+    result.llm_output = {
+        "token_usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+        },
+        "model_name": "gpt-4o",
+    }
+    return result
+
+
 def test_extraction_callback_records_usage_from_llm_result() -> None:
-    """ExtractionAgent's _UsageRecordingCallbackHandler reads
+    """ExtractionAgent's _TelemetryCallbackHandler reads
     ``LLMResult.llm_output['token_usage']`` and pushes it onto the
     recorder. Pin the contract directly without booting the full
     ReAct loop."""
     from agentic_audit.layer3_agents.extraction_agent import (
-        _UsageRecordingCallbackHandler,
+        _TelemetryCallbackHandler,
     )
 
     recorder = UsageRecorder()
-    handler = _UsageRecordingCallbackHandler(recorder)
+    handler = _TelemetryCallbackHandler(recorder)
 
-    # Simulate a LangChain LLMResult shape
-    fake_result = MagicMock()
-    fake_result.llm_output = {
-        "token_usage": {"prompt_tokens": 70, "completion_tokens": 30},
-        "model_name": "gpt-4o",
-    }
-    handler.on_llm_end(fake_result)
+    handler.on_llm_end(_llm_result(70, 30))
 
     assert recorder.n_calls == 1
     assert recorder.prompt_tokens == 70
@@ -618,16 +642,128 @@ def test_extraction_callback_silent_on_missing_token_usage() -> None:
     streaming-mode partials). The handler must silently no-op rather
     than raise into the agent loop."""
     from agentic_audit.layer3_agents.extraction_agent import (
-        _UsageRecordingCallbackHandler,
+        _TelemetryCallbackHandler,
     )
 
     recorder = UsageRecorder()
-    handler = _UsageRecordingCallbackHandler(recorder)
+    handler = _TelemetryCallbackHandler(recorder)
 
     fake_result = MagicMock()
     fake_result.llm_output = None
     handler.on_llm_end(fake_result)
 
+    assert recorder.n_calls == 0
+
+
+def test_extraction_callback_emits_llm_span_per_call(monkeypatch: Any) -> None:
+    """A start→end pair emits one ``llm.layer3_extraction`` span with the
+    same ``llm.*`` attribute schema the kit decorator produces for
+    narrative + validation — what Workbook 2 (Cost & Tokens) reads."""
+    import uuid
+
+    from agentic_audit.layer3_agents import extraction_agent
+    from agentic_audit.layer3_agents.extraction_agent import (
+        _TelemetryCallbackHandler,
+    )
+
+    tracer, exporter = _inmemory_tracer()
+    monkeypatch.setattr(extraction_agent, "_TRACER", tracer)
+
+    handler = _TelemetryCallbackHandler(UsageRecorder(), deployment="gpt-4o")
+    run_id = uuid.uuid4()
+    handler.on_chat_model_start({}, [], run_id=run_id)
+    handler.on_llm_end(_llm_result(70, 30), run_id=run_id)
+
+    spans = [s for s in exporter.get_finished_spans() if s.name == "llm.layer3_extraction"]
+    assert len(spans) == 1
+    attrs = spans[0].attributes
+    assert attrs["llm.prompt_tokens"] == 70
+    assert attrs["llm.completion_tokens"] == 30
+    assert attrs["llm.total_tokens"] == 100
+    assert attrs["llm.model_version"] == "gpt-4o"
+    assert attrs["llm.success"] is True
+    assert attrs["llm.total_cost_usd"] > 0  # gpt-4o is in the pricing table
+    assert "llm.duration_ms" in attrs
+
+
+def test_extraction_callback_emits_one_span_per_loop_call(monkeypatch: Any) -> None:
+    """The whole point of per-call instrumentation: a 2-call ReAct loop
+    emits 2 distinct spans (not 1 aggregate), each keyed by its own
+    LangChain run_id so durations + tokens stay per-call."""
+    import uuid
+
+    from agentic_audit.layer3_agents import extraction_agent
+    from agentic_audit.layer3_agents.extraction_agent import (
+        _TelemetryCallbackHandler,
+    )
+
+    tracer, exporter = _inmemory_tracer()
+    monkeypatch.setattr(extraction_agent, "_TRACER", tracer)
+
+    handler = _TelemetryCallbackHandler(UsageRecorder(), deployment="gpt-4o")
+    rid1, rid2 = uuid.uuid4(), uuid.uuid4()
+    handler.on_chat_model_start({}, [], run_id=rid1)
+    handler.on_llm_end(_llm_result(320, 80), run_id=rid1)
+    handler.on_chat_model_start({}, [], run_id=rid2)
+    handler.on_llm_end(_llm_result(540, 120), run_id=rid2)
+
+    spans = [s for s in exporter.get_finished_spans() if s.name == "llm.layer3_extraction"]
+    assert len(spans) == 2
+    totals = sorted(s.attributes["llm.total_tokens"] for s in spans)
+    assert totals == [400, 660]
+
+
+def test_extraction_callback_span_marks_error_and_closes(monkeypatch: Any) -> None:
+    """A failed call closes its span (no leak) with ``llm.success=False``
+    and ERROR status — mirrors the kit decorator's error path."""
+    import uuid
+
+    from opentelemetry.trace import StatusCode
+
+    from agentic_audit.layer3_agents import extraction_agent
+    from agentic_audit.layer3_agents.extraction_agent import (
+        _TelemetryCallbackHandler,
+    )
+
+    tracer, exporter = _inmemory_tracer()
+    monkeypatch.setattr(extraction_agent, "_TRACER", tracer)
+
+    handler = _TelemetryCallbackHandler(None, deployment="gpt-4o")
+    run_id = uuid.uuid4()
+    handler.on_chat_model_start({}, [], run_id=run_id)
+    handler.on_llm_error(RuntimeError("rate limited"), run_id=run_id)
+
+    spans = [s for s in exporter.get_finished_spans() if s.name == "llm.layer3_extraction"]
+    assert len(spans) == 1
+    assert spans[0].attributes["llm.success"] is False
+    assert spans[0].status.status_code == StatusCode.ERROR
+
+
+def test_extraction_callback_span_closes_without_usage(monkeypatch: Any) -> None:
+    """Missing token_usage still closes the span (no leak) with
+    success=True and no token attrs; the recorder is left untouched."""
+    import uuid
+
+    from agentic_audit.layer3_agents import extraction_agent
+    from agentic_audit.layer3_agents.extraction_agent import (
+        _TelemetryCallbackHandler,
+    )
+
+    tracer, exporter = _inmemory_tracer()
+    monkeypatch.setattr(extraction_agent, "_TRACER", tracer)
+
+    recorder = UsageRecorder()
+    handler = _TelemetryCallbackHandler(recorder, deployment="gpt-4o")
+    run_id = uuid.uuid4()
+    handler.on_chat_model_start({}, [], run_id=run_id)
+    no_usage = MagicMock()
+    no_usage.llm_output = None
+    handler.on_llm_end(no_usage, run_id=run_id)
+
+    spans = [s for s in exporter.get_finished_spans() if s.name == "llm.layer3_extraction"]
+    assert len(spans) == 1
+    assert spans[0].attributes["llm.success"] is True
+    assert "llm.prompt_tokens" not in spans[0].attributes
     assert recorder.n_calls == 0
 
 
