@@ -34,3 +34,10 @@ openai_data_plane_user_principal_ids = [
   # Terraform management 2026-05-06.
   "4c92c956-f8fe-4cdc-91f8-bade7f42d7d1",
 ]
+
+# ADLS module — dev uses LRS (locally redundant) instead of the module's
+# GRS default. Dev data is reproducible (re-ingest bronze / re-run
+# sweeps), so paying ~2x for geo-redundancy isn't justified on a
+# credit-capped subscription. Prod tfvars should set GRS. This is an
+# in-place redundancy change — no storage-account recreate, no data loss.
+adls_replication_type = "LRS"
