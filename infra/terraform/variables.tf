@@ -85,3 +85,26 @@ variable "openai_data_plane_user_principal_ids" {
   type        = list(string)
   default     = []
 }
+
+# ── ADLS (Data Lake Storage) ─────────────────────────────────────────
+
+variable "adls_replication_type" {
+  description = <<-EOT
+    ADLS account replication. GRS = geo-redundant (durability-first,
+    ~2x storage cost + cross-region replication); LRS = locally
+    redundant (cost-optimised). Root default is GRS so a no-tfvars
+    apply stays durability-first; dev tfvars overrides to LRS because
+    dev data is reproducible (re-ingest bronze / re-run sweeps), so
+    paying for geo-redundancy isn't justified. Prod should keep GRS.
+
+    GRS<->LRS is an in-place redundancy change — no storage-account
+    recreate, no data loss.
+  EOT
+  type        = string
+  default     = "GRS"
+
+  validation {
+    condition     = contains(["LRS", "ZRS", "GRS", "RAGRS", "GZRS", "RAGZRS"], var.adls_replication_type)
+    error_message = "adls_replication_type must be one of: LRS, ZRS, GRS, RAGRS, GZRS, RAGZRS."
+  }
+}

@@ -62,8 +62,9 @@ module "adls" {
   location            = azurerm_resource_group.app.location
   # Storage account names disallow hyphens — concatenated lowercase only.
   # Pattern: dls (CAF abbreviation) + aaf (project) + suffix + env.
-  account_name = "dlsaaf${var.name_suffix}${var.environment}"
-  tags         = local.common_tags
+  account_name     = "dlsaaf${var.name_suffix}${var.environment}"
+  replication_type = var.adls_replication_type
+  tags             = local.common_tags
 }
 
 module "databricks" {
