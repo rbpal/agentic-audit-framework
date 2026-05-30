@@ -29,7 +29,10 @@ import pytest
 from agentic_audit.layer3_agents.tools import (
     _coerce_rate,
     _detect_amendment_in_notes,
+    _embedded_prior_rate,
     _find_attribute_check,
+    _is_real_amendment,
+    _resolve_amendment,
     _resolve_evidence_for_quarter,
     compare_billing_rates,
     read_billing_rate,
@@ -1084,3 +1087,211 @@ def test_read_reviewer_comments_source_cell_refs_is_a_copy_not_reference() -> No
         }
     )
     assert second["source_cell_refs"] == ["sheet2!B7"]
+
+
+# ── Step 8.5 (follow-up #5): ACCEPT-path tool fixes ──────────────────
+#
+# The canonical "rate change WITH amendment" happy path (DC-9.D Q2 vs Q1)
+# was unreachable because compare_billing_rates sourced prior_rate from
+# the prior quarter's standalone row (Q1 = n/a, no rate) and the amendment
+# from notes (empty on the pass case). Both are now read from the current
+# quarter's OWN evidence: extracted_value["prior_rate"] and
+# extracted_value["amendment"].
+
+
+def test_embedded_prior_rate_reads_prior_rate_key_from_dict() -> None:
+    assert _embedded_prior_rate({"current_rate": 0.005, "prior_rate": 0.0025}) == 0.0025
+    assert _embedded_prior_rate({"current_rate": 0.005}) is None  # no prior_rate key
+    assert _embedded_prior_rate(0.005) is None  # bare float, not a dict
+    assert _embedded_prior_rate(None) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Amendment on file — ref DOC-2025-Q2", True),
+        ("IMA addendum 2025-04-01", True),
+        ("NO AMENDMENT FILED", False),
+        ("no amendment filed", False),  # case-insensitive
+        ("N/A — no rate change", False),
+        ("", False),
+        ("   ", False),
+        (None, False),
+    ],
+)
+def test_is_real_amendment(text: str | None, expected: bool) -> None:
+    assert _is_real_amendment(text) is expected
+
+
+def test_resolve_amendment_prefers_structured_extracted_value_field() -> None:
+    """Pass-with-amendment shape: amendment lives in extracted_value, notes
+    are empty. The notes-only scan used to miss this; structured read finds it."""
+    check = AttributeCheck(
+        control_id="DC-9",
+        attribute_id="D",
+        status="pass",
+        evidence_cell_refs=["dc9!r16"],
+        extracted_value={
+            "prior_rate": 0.0025,
+            "current_rate": 0.005,
+            "amendment": "Amendment on file — ref DOC-2025-Q2",
+        },
+        notes=None,
+    )
+    assert _resolve_amendment(check) == "Amendment on file — ref DOC-2025-Q2"
+
+
+def test_resolve_amendment_rejects_no_amendment_sentinel_in_structured_field() -> None:
+    """Fail/no-amendment shape: the sentinel must NOT count as found, even
+    though it contains the word 'amendment' (which a notes scan would hit)."""
+    check = AttributeCheck(
+        control_id="DC-9",
+        attribute_id="D",
+        status="fail",
+        evidence_cell_refs=["dc9!r16"],
+        extracted_value={
+            "prior_rate": 0.005,
+            "current_rate": 0.0075,
+            "amendment": "NO AMENDMENT FILED",
+        },
+        notes="rates differ (prior=0.005, current=0.0075) but amendment is 'NO AMENDMENT FILED'",
+    )
+    assert _resolve_amendment(check) is None
+
+
+def test_resolve_amendment_falls_back_to_notes_when_no_structured_field() -> None:
+    """No 'amendment' key in extracted_value -> guarded notes scan."""
+    found = AttributeCheck(
+        control_id="DC-9",
+        attribute_id="D",
+        status="pass",
+        extracted_value=30.0,
+        notes="Per IMA amendment dated 2026-06-15.",
+    )
+    assert _resolve_amendment(found) == "Per IMA amendment dated 2026-06-15."
+    absent = AttributeCheck(
+        control_id="DC-9",
+        attribute_id="D",
+        status="pass",
+        extracted_value=30.0,
+        notes="Reviewer concurs; standard fee schedule.",
+    )
+    assert _resolve_amendment(absent) is None
+
+
+def test_compare_billing_rates_prior_rate_falls_back_to_embedded_when_prior_quarter_na() -> None:
+    """Q1 (prior) is n/a with no rate; the Q2 (current) row embeds
+    prior_rate. The tool should recover it so delta + percent_change
+    compute instead of degrading to None."""
+    current = _evidence(
+        quarter="Q2",
+        dc9d_rate={
+            "prior_rate": 0.0025,
+            "current_rate": 0.005,
+            "amendment": "Amendment on file — ref DOC-2025-Q2",
+        },
+        dc9d_cell_refs=["dc9!r13", "dc9!r14", "dc9!r16"],
+    )
+    prior = _evidence(quarter="Q1", dc9d_rate=None)  # Q1: n/a, no rate
+    state = _state(current=current, prior=prior)
+
+    result = compare_billing_rates.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-9",
+            "current_quarter": "Q2",
+            "prior_quarter": "Q1",
+            "state": state,
+        }
+    )
+
+    assert result["current_rate"] == 0.005
+    assert result["prior_rate"] == 0.0025  # recovered from current's embedded field
+    assert result["delta"] == pytest.approx(0.0025)
+    assert result["percent_change"] == pytest.approx(0.0025 / 0.0025)
+
+
+def test_compare_billing_rates_independent_prior_wins_over_embedded() -> None:
+    """When the prior quarter DOES carry a rate, use it (independent
+    cross-check) — the embedded value is only a fallback."""
+    current = _evidence(
+        quarter="Q3",
+        dc9d_rate={"prior_rate": 99.0, "current_rate": 0.005},  # embedded prior is bogus
+    )
+    prior = _evidence(quarter="Q2", dc9d_rate=0.0025)  # real independent prior
+    state = _state(current=current, prior=prior)
+
+    result = compare_billing_rates.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-9",
+            "current_quarter": "Q3",
+            "prior_quarter": "Q2",
+            "state": state,
+        }
+    )
+
+    assert result["prior_rate"] == 0.0025  # independent, NOT the embedded 99.0
+
+
+def test_compare_billing_rates_q2vq1_accept_shape_end_to_end() -> None:
+    """The full canonical ACCEPT case: prior rate recovered, delta positive,
+    amendment found — every signal the agent needs to recommend ACCEPT."""
+    current = _evidence(
+        quarter="Q2",
+        dc9d_rate={
+            "prior_rate": 0.0025,
+            "current_rate": 0.005,
+            "amendment": "Amendment on file — ref DOC-2025-Q2",
+        },
+        dc9d_cell_refs=["dc9!r13", "dc9!r14", "dc9!r16"],
+        dc9d_notes=None,
+    )
+    prior = _evidence(quarter="Q1", dc9d_rate=None)
+    state = _state(current=current, prior=prior)
+
+    result = compare_billing_rates.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-9",
+            "current_quarter": "Q2",
+            "prior_quarter": "Q1",
+            "state": state,
+        }
+    )
+
+    assert result["prior_rate"] == 0.0025
+    assert result["current_rate"] == 0.005
+    assert result["delta"] == pytest.approx(0.0025)
+    assert result["ima_amendment_found"] is True
+    assert "Amendment on file" in result["ima_amendment_text"]
+    assert result["ima_amendment_cell_ref"] == "dc9!r13"
+
+
+def test_compare_billing_rates_q4_no_amendment_still_escalates() -> None:
+    """Regression guard: the SOX-exception shape (rate change, sentinel
+    amendment) must still report found=False so the agent ESCALATEs."""
+    current = _evidence(
+        quarter="Q4",
+        dc9d_rate={
+            "prior_rate": 0.005,
+            "current_rate": 0.0075,
+            "amendment": "NO AMENDMENT FILED",
+        },
+        dc9d_notes="rates differ (prior=0.005, current=0.0075) but amendment is 'NO AMENDMENT FILED'",
+    )
+    prior = _evidence(quarter="Q3", dc9d_rate={"prior_rate": 0.005, "current_rate": 0.005})
+    state = _state(current=current, prior=prior)
+
+    result = compare_billing_rates.invoke(
+        {
+            "engagement_id": "eng-1",
+            "control_id": "DC-9",
+            "current_quarter": "Q4",
+            "prior_quarter": "Q3",
+            "state": state,
+        }
+    )
+
+    assert result["delta"] == pytest.approx(0.0025)  # rate changed
+    assert result["ima_amendment_found"] is False  # but no real amendment -> ESCALATE

@@ -142,6 +142,26 @@ def _coerce_rate(value: Any) -> float | None:
     return None
 
 
+def _embedded_prior_rate(extracted_value: Any) -> float | None:
+    """Recover the prior rate Layer-1 records INSIDE the current quarter's
+    DC-9.D evidence (``extracted_value['prior_rate']``).
+
+    The DC-9.D workpaper self-documents both sides of the comparison — a
+    "Prior rate" cell and a "Current rate" cell — and Layer-1 stores both
+    on the current quarter's row. That embedded prior is the authoritative
+    comparison baseline, and the ONLY source when the prior quarter's
+    standalone DC-9.D row carries no rate: Q1 (the initial-rate period) is
+    ``n/a`` with no ``extracted_value``, so reading Q1's row yields None.
+    Using the embedded prior is what lets the canonical "rate change WITH
+    amendment" happy path — the first authorised change after an initial
+    registration — reach ACCEPT. See ``privateDocs/step_08_agent_tools.md``
+    § Step 8.5 (open follow-up #5).
+    """
+    if isinstance(extracted_value, dict):
+        return _coerce_rate(extracted_value.get("prior_rate"))
+    return None
+
+
 # ── read_billing_rate ────────────────────────────────────────────────
 
 
@@ -274,6 +294,49 @@ def _detect_amendment_in_notes(notes: str | None) -> str | None:
     return None
 
 
+# Phrases Layer-1 writes when a rate changed but NO authorising amendment
+# was filed (the SOX-exception case). These contain the word "amendment",
+# so a naive marker scan false-positives on them — _is_real_amendment
+# rejects them explicitly.
+_NO_AMENDMENT_PHRASES = ("no amendment filed",)
+
+
+def _is_real_amendment(text: str | None) -> bool:
+    """True when ``text`` names an actual authorising amendment; False for
+    empty, ``N/A``, or ``NO AMENDMENT FILED`` phrasing."""
+    if not text or not text.strip():
+        return False
+    lowered = text.lower()
+    if any(phrase in lowered for phrase in _NO_AMENDMENT_PHRASES):
+        return False
+    return not text.strip().upper().startswith("N/A")
+
+
+def _resolve_amendment(check: AttributeCheck) -> str | None:
+    """Return the authorising-amendment reference on a DC-9.D check, or
+    None when none is filed.
+
+    Reads the STRUCTURED ``extracted_value['amendment']`` field first.
+    The original task_02 Option-(c) seam scanned ``notes`` only, but
+    Layer-1 actually records the amendment in ``extracted_value`` on the
+    rate-change cases — a real reference on the authorised change
+    (status=pass, empty notes) and the literal ``NO AMENDMENT FILED``
+    sentinel on the exception (status=fail, notes that *mention* the
+    word). So the notes-only scan false-NEGATIVED the happy path while
+    false-POSITIVing the no-amendment note. Reading the structured field
+    fixes both; the notes scan stays as a fallback for evidence shapes
+    that lack the field, now guarded against the negative phrasing.
+    """
+    ev = check.extracted_value
+    if isinstance(ev, dict) and "amendment" in ev:
+        candidate = ev.get("amendment")
+        if isinstance(candidate, str) and _is_real_amendment(candidate):
+            return candidate
+        return None
+    scanned = _detect_amendment_in_notes(check.notes)
+    return scanned if _is_real_amendment(scanned) else None
+
+
 @tool
 def compare_billing_rates(
     engagement_id: str,
@@ -360,6 +423,14 @@ def compare_billing_rates(
 
     current_rate = _coerce_rate(current_check.extracted_value) if current_check else None
     prior_rate = _coerce_rate(prior_check.extracted_value) if prior_check else None
+    if prior_rate is None and current_check is not None:
+        # The prior quarter's standalone DC-9.D row carries no rate — e.g.
+        # Q1, the initial-rate period whose attribute is n/a. Fall back to
+        # the prior rate the CURRENT quarter's own workpaper documents
+        # (extracted_value["prior_rate"]). This is what makes the canonical
+        # "rate change WITH amendment" happy path ACCEPT-able instead of
+        # stalling on prior_rate=None. Step 8.5 (open follow-up #5).
+        prior_rate = _embedded_prior_rate(current_check.extracted_value)
 
     delta: float | None
     percent_change: float | None
@@ -373,14 +444,17 @@ def compare_billing_rates(
         delta = None
         percent_change = None
 
-    # Amendment surface — best-effort scan of current quarter's notes.
-    # The amendment that justifies a Q3 rate change lives ON the Q3
-    # evidence (the auditor attaches the reference to the period under
-    # investigation), so prior's notes are not consulted.
+    # Amendment surface — read the current quarter's DC-9.D evidence. The
+    # amendment that justifies a rate change lives ON the period under
+    # investigation (the auditor attaches the reference there), so prior's
+    # evidence is not consulted. _resolve_amendment reads the structured
+    # extracted_value["amendment"] field first, falling back to a guarded
+    # notes scan (Step 8.5 — the original notes-only scan missed the
+    # structured field where Layer-1 actually stores the amendment).
     amendment_text: str | None = None
     amendment_cell_ref = ""
     if current_check is not None:
-        amendment_text = _detect_amendment_in_notes(current_check.notes)
+        amendment_text = _resolve_amendment(current_check)
         if amendment_text is not None and current_check.evidence_cell_refs:
             amendment_cell_ref = current_check.evidence_cell_refs[0]
 

@@ -98,8 +98,16 @@ BASELINE_SCOPES: list[BaselineScope] = [
         rationale=(
             "ToC dc9_Q2.json defect=dc9_rate_change_with_amendment; DC-9.D "
             "expected=pass. The happy-path ACCEPT case: rate changed AND "
-            "amendment exists to authorise. Agent should surface both and "
-            "recommend ACCEPT."
+            "amendment exists to authorise. Agent surfaces both and "
+            "recommends ACCEPT. NOTE (Step 8.5 / follow-up #5): the v1 "
+            "baseline observed ESCALATE here — NOT a fixture gap as first "
+            "diagnosed, but a compare_billing_rates sourcing bug. Q2's row "
+            "self-documents prior=0.25%, current=0.50%, amendment-on-file; "
+            "the tool was reading prior_rate from Q1's n/a row and the "
+            "amendment from empty notes. Fixed to read the embedded "
+            "prior_rate + structured extracted_value['amendment'], so this "
+            "scope now reaches ACCEPT — the corpus's first verified "
+            "happy-path terminal state."
         ),
     ),
     BaselineScope(
