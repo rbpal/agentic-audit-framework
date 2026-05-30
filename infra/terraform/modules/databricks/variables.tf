@@ -23,3 +23,18 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "log_analytics_workspace_id" {
+  description = <<-EOT
+    Resource ID of the Log Analytics workspace to forward the workspace's
+    diagnostic logs to (typically the monitor module's
+    `log_analytics_workspace_id` output → `log-aaf-<env>`). When set, a
+    single diagnostic setting ships a focused category set
+    (unityCatalog / clusters / jobs / notebook) to that workspace,
+    enabling cross-stack KQL that correlates audit-framework spans with
+    Databricks events. Defaults null → no diagnostic setting created, so
+    the module stays usable standalone (forwarding is opt-in).
+  EOT
+  type        = string
+  default     = null
+}
