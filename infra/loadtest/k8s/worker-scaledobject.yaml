@@ -1,0 +1,26 @@
+# KEDA — the event-driven autoscaler. Scales the worker Deployment on Service
+# Bus queue DEPTH (not CPU): backlog grows under load → more workers; queue
+# drains → scale back to zero. This is the backpressure that lets the workers
+# sip from the queue at a TPM-safe rate instead of stampeding the LLM backend.
+#
+# Requires the AKS managed KEDA add-on (terraform: workload_autoscaler_profile
+# { keda_enabled = true }) and worker-triggerauth.yaml applied first.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: audit-worker
+spec:
+  scaleTargetRef:
+    name: audit-worker
+  minReplicaCount: 0 # scale to zero when the queue is empty
+  maxReplicaCount: 10
+  cooldownPeriod: 60
+  pollingInterval: 15
+  triggers:
+    - type: azure-servicebus
+      metadata:
+        queueName: investigations
+        messageCount: "5" # target ~5 queued msgs per worker → scale out past that
+        activationMessageCount: "1" # wake from zero on the first message
+      authenticationRef:
+        name: aaf-sb-auth

@@ -1,0 +1,11 @@
+# KEDA TriggerAuthentication — feeds the Service Bus connection string (from
+# the K8s secret) to the ScaledObject trigger. Applied before the ScaledObject.
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: aaf-sb-auth
+spec:
+  secretTargetRef:
+    - parameter: connection
+      name: aaf-loadtest-secrets
+      key: SERVICEBUS_CONNECTION_STRING

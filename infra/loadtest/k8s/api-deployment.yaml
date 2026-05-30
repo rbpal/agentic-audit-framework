@@ -1,0 +1,37 @@
+# API Deployment — enqueues jobs and returns 202. HPA scales it on CPU.
+# ${ACR_LOGIN_SERVER} is substituted at apply (envsubst); see k8s/README.md.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: audit-api
+  labels: { app: audit-api }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: audit-api }
+  template:
+    metadata:
+      labels: { app: audit-api }
+    spec:
+      containers:
+        - name: audit-api
+          image: ${ACR_LOGIN_SERVER}/audit-api:load
+          ports:
+            - containerPort: 8000
+          env:
+            - name: SERVICEBUS_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef: { name: aaf-loadtest-secrets, key: SERVICEBUS_CONNECTION_STRING }
+            - name: SERVICEBUS_QUEUE_NAME
+              value: "investigations"
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" } # cpu request REQUIRED for HPA %
+            limits: { cpu: "500m", memory: "512Mi" }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 20

@@ -1,0 +1,30 @@
+# Keep the build context small + the image clean: only src + dep manifests.
+.git
+.github
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+htmlcov
+.coverage*
+
+# Not needed at runtime
+tests
+infra
+scripts
+eval
+docs
+notebooks
+ai_ops_kit
+
+# Local-only / gitignored (defense-in-depth — never bake into an image)
+CLAUDE.md
+.claude
+privateDocs
+scratch
+.env
+.env.*
+!.env.example
+*.private.md
