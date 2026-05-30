@@ -37,6 +37,23 @@ variable "name_suffix" {
   }
 }
 
+# ── Monitor: alerting ────────────────────────────────────────────────
+
+variable "operator_email" {
+  description = <<-EOT
+    Destination address for the monitor Action Group's email receiver —
+    the human paged when any of the five scheduled-query alerts fires.
+    No default: every environment must set its own operator in tfvars so
+    an apply never silently ships alerts with no recipient.
+  EOT
+  type        = string
+
+  validation {
+    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.operator_email))
+    error_message = "operator_email must be a valid email address."
+  }
+}
+
 # ── Task 03: Azure OpenAI ────────────────────────────────────────────
 
 variable "openai_account_name" {

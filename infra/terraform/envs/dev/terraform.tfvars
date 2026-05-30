@@ -17,6 +17,12 @@ location    = "eastus2"
 owner       = "rbpal"
 name_suffix = "rbpal"
 
+# Monitor alerting — destination for the Action Group's email receiver.
+# Operator who gets paged when any of the five scheduled-query alerts
+# fires. Not a secret (an address, not a credential), so it lives here
+# rather than in an env var.
+operator_email = "rajendra_b_pal@msn.com"
+
 # OpenAI module
 openai_account_name       = "aoai-aaf-dev"
 openai_model_version      = "2024-11-20"
