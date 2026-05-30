@@ -16,8 +16,17 @@ spec:
     matchLabels: { app: audit-worker }
   template:
     metadata:
-      labels: { app: audit-worker }
+      # azure.workload.identity/use="true" tells the Workload Identity webhook
+      # to inject the projected token + AZURE_* env vars into this pod, so
+      # DefaultAzureCredential can mint an AAD token for Azure OpenAI (REAL
+      # mode). Harmless in mock mode — the worker never calls a backend.
+      labels:
+        app: audit-worker
+        azure.workload.identity/use: "true"
     spec:
+      # SA annotated with the UAMI client ID (k8s/serviceaccount.yaml) — the
+      # keyless link to Azure OpenAI. Federated to this exact ns:name in TF.
+      serviceAccountName: audit-worker-sa
       containers:
         - name: audit-worker
           image: ${ACR_LOGIN_SERVER}/audit-api:load
