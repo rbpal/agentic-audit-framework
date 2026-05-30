@@ -1,0 +1,90 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "## Errors & Hallucinations — failure health\n\nFour panels surfacing where the pipeline breaks and how often the narrative layer hallucinates. The error panels read from the `exceptions` table (auto-captured when a `@traced_*` span's body raises). The hallucination panel reads from `customEvents` (`narrative_generated` / `narrative_hallucination_detected`). Time range is controlled by the workbook's top-right time picker. Panels stay empty until failures occur — chaos-test scenarios (Step 11) populate them; FactChecker false-positive scenarios from the Step 6 baseline arc are the reference hallucination signal."
+      },
+      "name": "title"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "### Error rate by layer\n\nCount of exceptions per 5-minute bucket, split by the originating layer (`customDimensions[\"layer\"]`). The four layers are `layer1_extract`, `layer2_narrative`, `layer3_agents`, `fact_checker`. A burst in any single layer localises a regression to the component that owns it."
+      },
+      "name": "header_error_rate_by_layer"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "exceptions\n| extend layer = tostring(customDimensions[\"layer\"])\n| summarize count() by layer, bin(timestamp, 5m)\n| render timechart",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "timechart"
+      },
+      "name": "panel_error_rate_by_layer"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "### Hallucination rate\n\nFraction of generated narratives flagged by the FactChecker each hour. Numerator is `narrative_hallucination_detected` events; denominator is `narrative_generated` events; the join is on the hourly bucket. This is the single quality number for the narrative layer — anything above ~1% warrants investigation (and is the trigger behind the HighHallucinationRate alert in task_05)."
+      },
+      "name": "header_hallucination_rate"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let hallu = customEvents\n  | where name == \"narrative_hallucination_detected\"\n  | summarize count() by bin(timestamp, 1h);\nlet total = customEvents\n  | where name == \"narrative_generated\"\n  | summarize count() by bin(timestamp, 1h);\nhallu\n| join total on timestamp\n| extend rate = count_ * 1.0 / count_1\n| render timechart",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "timechart"
+      },
+      "name": "panel_hallucination_rate"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "### Structural error scenarios\n\nScenarios where Layer 1 raised a `StructuralError` (a control workbook whose shape the deterministic parser couldn't handle), counted by `customDimensions[\"scenario_id\"]` and sorted by frequency. A repeat offender here points at a specific gold scenario whose Excel layout needs a parser fix."
+      },
+      "name": "header_structural_error_scenarios"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "exceptions\n| where type endswith \"StructuralError\"\n| summarize count() by tostring(customDimensions[\"scenario_id\"])\n| render table",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "table"
+      },
+      "name": "panel_structural_error_scenarios"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "### Recent failures (log + trace join)\n\nThe last 20 exceptions in the past hour with their `operation_Id` and `span_id`. Click an `operation_Id` to deep-link into the full distributed-trace span tree for that failed run — the fastest path from \"something broke\" to the exact span that threw."
+      },
+      "name": "header_recent_failures"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "exceptions\n| where timestamp > ago(1h)\n| project timestamp, type, outerMessage, operation_Id, span_id = tostring(customDimensions[\"span_id\"])\n| take 20\n| render table",
+        "size": 0,
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components",
+        "visualization": "table"
+      },
+      "name": "panel_recent_failures"
+    }
+  ],
+  "isLocked": false,
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}
