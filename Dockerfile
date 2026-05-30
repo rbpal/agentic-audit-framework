@@ -31,6 +31,22 @@ COPY pyproject.toml poetry.lock README.md ./
 RUN poetry config virtualenvs.create false \
     && poetry install --only main --no-root
 
+# ── REAL-mode extras (worker path only; mock never imports these) ──────
+# Two deps the worker's RealPipeline needs that aren't in the durable
+# pyproject, pinned here so they live ONLY in this throwaway image:
+#   * ai_ops_kit — the shared OTel kit the layer3 agents import. Installed
+#     --no-deps on purpose: its pyproject pins opentelemetry >=1.41, but the
+#     image already has the otel 1.40 + structlog it actually uses at runtime
+#     (verified against the agentic_audit poetry env, which runs it on 1.40).
+#   * databricks-sql-connector — the worker's gold-table writer does
+#     `from databricks import sql`; never declared in pyproject. Pinned to the
+#     version the Layer-3 baseline validated against. Both proven co-installable
+#     with the main set in that same env.
+# Placed before COPY src/ so this layer caches across application changes.
+COPY ai_ops_kit/ ./ai_ops_kit/
+RUN pip install --no-cache-dir --no-deps ./ai_ops_kit \
+    && pip install --no-cache-dir "databricks-sql-connector==4.2.6"
+
 # App code — changes here don't bust the dependency layer above.
 COPY src/ ./src/
 ENV PYTHONPATH=/app/src

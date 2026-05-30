@@ -17,7 +17,9 @@ scripts
 eval
 docs
 notebooks
-ai_ops_kit
+# ai_ops_kit is intentionally NOT ignored: the layer3 agents import it
+# (`from ai_ops_kit import get_tracer`), so the worker's REAL mode needs it in
+# the build context. The Dockerfile installs it (--no-deps).
 
 # Local-only / gitignored (defense-in-depth — never bake into an image)
 CLAUDE.md
