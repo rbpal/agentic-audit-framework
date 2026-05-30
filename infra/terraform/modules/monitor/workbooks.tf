@@ -43,3 +43,19 @@ resource "azurerm_application_insights_workbook" "cost_tokens" {
 
   tags = var.tags
 }
+
+resource "azurerm_application_insights_workbook" "errors" {
+  name                = "a4f10004-0003-4002-a001-000000000003"
+  resource_group_name = var.resource_group_name
+  location            = var.location
+
+  display_name = "Errors & Hallucinations"
+  description  = "Failure health — error rate by layer, hallucination rate, structural-error scenarios, recent failures."
+
+  source_id = lower(azurerm_application_insights.this.id)
+  category  = "workbook"
+
+  data_json = file("${path.module}/../../../azure/workbooks/errors.json")
+
+  tags = var.tags
+}
