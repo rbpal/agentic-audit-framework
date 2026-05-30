@@ -45,7 +45,7 @@ Every LLM call emits an OpenTelemetry span (`llm.*`) carrying token and cost dim
 
 ![Tokens by model](docs/images/workbook_tokens_by_model.png)
 
-*Tokens grouped by `llm.model_version`. A single `gpt-4o` stack confirms the whole pipeline runs on one model; this is the panel that would visibly catch model-mix drift — for example a code path accidentally pinned to `gpt-4o-mini`.*
+*Tokens grouped by `llm.model_version`. A single `gpt-4o` stack confirms the whole pipeline runs on one model; this is the panel that would visibly catch model-mix regressions — e.g. one agent reverting to `gpt-4o-mini` after a refactor.*
 
 ## Quickstart
 
