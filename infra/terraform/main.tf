@@ -74,6 +74,10 @@ module "databricks" {
   location            = azurerm_resource_group.app.location
   workspace_name      = "dbw-aaf-${var.environment}"
   tags                = local.common_tags
+
+  # Forward a focused Databricks log-category set to the shared Log
+  # Analytics workspace for cross-stack correlation (Step 10 task_06).
+  log_analytics_workspace_id = module.monitor.log_analytics_workspace_id
 }
 
 module "monitor" {
