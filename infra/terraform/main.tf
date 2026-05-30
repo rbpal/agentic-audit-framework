@@ -83,7 +83,13 @@ module "monitor" {
   location            = azurerm_resource_group.app.location
   log_analytics_name  = "log-aaf-${var.environment}"
   app_insights_name   = "appi-aaf-${var.environment}"
-  tags                = local.common_tags
+
+  # Alerting: Action Group + five scheduled-query rules (Step 10 task_05).
+  action_group_name       = "ag-aaf-${var.environment}"
+  action_group_short_name = "aaf-${var.environment}"
+  operator_email          = var.operator_email
+
+  tags = local.common_tags
 }
 
 module "keyvault" {

@@ -24,3 +24,8 @@ output "app_insights_instrumentation_key" {
   value       = azurerm_application_insights.this.instrumentation_key
   sensitive   = true
 }
+
+output "action_group_id" {
+  description = "Resource ID of the alert Action Group. Reference from any additional alert rule that should notify the same operator."
+  value       = azurerm_monitor_action_group.this.id
+}

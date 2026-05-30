@@ -50,3 +50,36 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+# ── Alerting (action group + scheduled-query rules) ──────────────────
+
+variable "action_group_name" {
+  description = "Name of the Action Group that fans alert notifications out to receivers. RG-scoped uniqueness. Convention: ag-aaf-<env>."
+  type        = string
+}
+
+variable "action_group_short_name" {
+  description = "Action Group short name — used as the SMS/email sender prefix. Azure caps this at 12 characters. Convention: aaf-<env>."
+  type        = string
+
+  validation {
+    condition     = length(var.action_group_short_name) <= 12
+    error_message = "action_group_short_name must be 12 characters or fewer (Azure limit)."
+  }
+}
+
+variable "operator_email" {
+  description = <<-EOT
+    Destination address for the Action Group's single email receiver —
+    the human who gets paged when a scheduled-query alert fires. No
+    default: each environment must inject its own operator in tfvars so
+    a stray apply never silently drops alerts on the floor. Production
+    would swap this email receiver for a webhook → PagerDuty/OpsGenie.
+  EOT
+  type        = string
+
+  validation {
+    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.operator_email))
+    error_message = "operator_email must be a valid email address."
+  }
+}
