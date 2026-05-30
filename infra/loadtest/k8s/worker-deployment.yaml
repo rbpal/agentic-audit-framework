@@ -1,0 +1,51 @@
+# Worker Deployment — drains the queue and runs process_scenario. KEDA owns
+# the replica count (worker-scaledobject.yaml), so `replicas` here is just the
+# pre-KEDA seed. Command overrides the image's default (uvicorn) to the worker.
+#
+# AAF_MOCK_BACKENDS="1" = the scaling demo (sleep, no backends, $0, no creds
+# needed). For the tiny REAL burst, patch it to "0":
+#   kubectl set env deploy/audit-worker AAF_MOCK_BACKENDS=0
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: audit-worker
+  labels: { app: audit-worker }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: audit-worker }
+  template:
+    metadata:
+      labels: { app: audit-worker }
+    spec:
+      containers:
+        - name: audit-worker
+          image: ${ACR_LOGIN_SERVER}/audit-api:load
+          command: ["python", "-m", "agentic_audit.api.worker"]
+          env:
+            - name: AAF_MOCK_BACKENDS
+              value: "1"
+            - name: SERVICEBUS_QUEUE_NAME
+              value: "investigations"
+            - name: SERVICEBUS_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef: { name: aaf-loadtest-secrets, key: SERVICEBUS_CONNECTION_STRING }
+            # REAL-mode backends — read only when AAF_MOCK_BACKENDS=0.
+            - name: AZURE_OPENAI_ENDPOINT
+              valueFrom:
+                secretKeyRef: { name: aaf-loadtest-secrets, key: AZURE_OPENAI_ENDPOINT, optional: true }
+            - name: DATABRICKS_HOST
+              valueFrom:
+                secretKeyRef: { name: aaf-loadtest-secrets, key: DATABRICKS_HOST, optional: true }
+            - name: DATABRICKS_TOKEN
+              valueFrom:
+                secretKeyRef: { name: aaf-loadtest-secrets, key: DATABRICKS_TOKEN, optional: true }
+            - name: DATABRICKS_SQL_WAREHOUSE_ID
+              valueFrom:
+                secretKeyRef: { name: aaf-loadtest-secrets, key: DATABRICKS_SQL_WAREHOUSE_ID, optional: true }
+            - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef: { name: aaf-loadtest-secrets, key: APPLICATIONINSIGHTS_CONNECTION_STRING, optional: true }
+          resources:
+            requests: { cpu: "100m", memory: "512Mi" }
+            limits: { cpu: "1000m", memory: "1Gi" }

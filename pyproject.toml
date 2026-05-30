@@ -52,7 +52,10 @@ dependencies = [
     "opentelemetry-exporter-otlp (>=1.40,<1.41)",
     "structlog (>=24.1.0,<26.0.0)",
     "azure-monitor-opentelemetry (>=1.6.0,<2.0.0)",
-    "azure-monitor-opentelemetry-exporter (>=1.0.0b52,<2.0.0)"
+    "azure-monitor-opentelemetry-exporter (>=1.0.0b52,<2.0.0)",
+    "fastapi (>=0.115,<1.0.0)",
+    "uvicorn[standard] (>=0.34,<1.0.0)",
+    "azure-servicebus (>=7.12,<8.0.0)"
 ]
 
 
@@ -74,7 +77,8 @@ dev = [
     "ruff (>=0.15.11,<0.16.0)",
     "mypy (>=1.20.1,<2.0.0)",
     "pre-commit (>=4.5.1,<5.0.0)",
-    "types-pyyaml (>=6.0.12.20260408,<7.0.0.0)"
+    "types-pyyaml (>=6.0.12.20260408,<7.0.0.0)",
+    "httpx (>=0.27,<1.0.0)"
 ]
 
 # ============================================================================
@@ -128,6 +132,11 @@ disallow_untyped_defs = false
 [[tool.mypy.overrides]]
 module = [
     "azure.identity.*",
+    "azure.servicebus",
+    "azure.servicebus.*",
+    "databricks.*",
+    "fastapi",
+    "fastapi.*",
     "langchain_core.*",
     "langchain_openai.*",
     "langgraph.*",
